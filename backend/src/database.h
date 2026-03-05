@@ -31,6 +31,14 @@ public:
     std::optional<Plan> getPlanByTypeAndDate(const std::string& type,
                                              const std::string& date);
     bool deletePlan(int id);
+    bool markPlanReviewed(int id);
+    std::vector<Plan> getUnreviewedDailyPlans(const std::string& beforeDate,
+                                               const std::string& monday);
+
+    // Weekly summaries
+    WeeklySummary createSummary(const WeeklySummary& summary);
+    std::optional<WeeklySummary> getSummary(const std::string& weekDate);
+    std::vector<WeeklySummary> getAllSummaries();
 
     // Productivity logs
     ProductivityLog createLog(const ProductivityLog& log);

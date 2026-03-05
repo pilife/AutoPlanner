@@ -29,11 +29,21 @@ export const generateWeeklyPlan = (date) =>
   request('/plans/generate-weekly', { method: 'POST', body: JSON.stringify({ date }) });
 export const generateDailyPlans = (date) =>
   request('/plans/generate-daily', { method: 'POST', body: JSON.stringify({ date }) });
+export const getUnreviewedPlans = (before) =>
+  request(`/plans/unreviewed?before=${before}`);
+export const reviewPlan = (data) =>
+  request('/plans/review', { method: 'POST', body: JSON.stringify(data) });
 
 // Productivity
 export const getProductivityLogs = (taskId) => request(`/productivity/${taskId}`);
 export const createProductivityLog = (log) =>
   request('/productivity', { method: 'POST', body: JSON.stringify(log) });
+
+// Summaries
+export const generateSummary = (date) =>
+  request('/summaries/generate', { method: 'POST', body: JSON.stringify({ date }) });
+export const getSummary = (date) => request(`/summaries?date=${date}`);
+export const getAllSummaries = () => request('/summaries');
 
 // Categories
 export const getCategories = () => request('/categories');

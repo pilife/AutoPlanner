@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getTasks, createTask, updateTask, deleteTask } from '../api';
 import TaskForm from './TaskForm';
+import { formatDuration } from '../helpers';
 
 const PRIORITY_LABELS = { 1: 'Critical', 2: 'High', 3: 'Medium', 4: 'Low', 5: 'Minimal' };
 
@@ -43,7 +44,7 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
         </td>
         <td>{task.category || '-'}</td>
         <td>{PRIORITY_LABELS[task.priority]}</td>
-        <td>{task.estimated_minutes}m</td>
+        <td>{formatDuration(task.estimated_minutes)}</td>
         <td>{task.due_date || '-'}</td>
         <td>
           <span

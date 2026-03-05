@@ -2,6 +2,7 @@
 #include <httplib.h>
 #include "database.h"
 #include "routes.h"
+#include "seed.h"
 
 int main(int argc, char* argv[]) {
     int port = 8080;
@@ -10,6 +11,7 @@ int main(int argc, char* argv[]) {
     }
 
     Database db("autoplanner.db");
+    seedIfEmpty(db);
     httplib::Server server;
 
     // CORS middleware — allow requests from the Vite dev server

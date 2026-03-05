@@ -40,8 +40,24 @@ void Database::initTables() {
             type       TEXT NOT NULL,
             date       TEXT NOT NULL,
             items_json TEXT DEFAULT '[]',
+            reviewed   INTEGER DEFAULT 0,
             created_at TEXT NOT NULL,
             UNIQUE(type, date)
+        );
+
+        CREATE TABLE IF NOT EXISTS weekly_summaries (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_date          TEXT NOT NULL UNIQUE,
+            total_planned      INTEGER DEFAULT 0,
+            total_completed    INTEGER DEFAULT 0,
+            total_actual       INTEGER DEFAULT 0,
+            tasks_planned      INTEGER DEFAULT 0,
+            tasks_completed    INTEGER DEFAULT 0,
+            tasks_carried_over INTEGER DEFAULT 0,
+            category_breakdown TEXT DEFAULT '{}',
+            completed_tasks    TEXT DEFAULT '[]',
+            incomplete_tasks   TEXT DEFAULT '[]',
+            created_at         TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS productivity_logs (
@@ -292,7 +308,7 @@ std::optional<Plan> Database::getPlanByTypeAndDate(const std::string& type,
     std::optional<Plan> result;
     sqlite3_stmt* stmt = nullptr;
     sqlite3_prepare_v2(db_,
-        "SELECT id, type, date, items_json, created_at FROM plans "
+        "SELECT id, type, date, items_json, reviewed, created_at FROM plans "
         "WHERE type = ? AND date = ?", -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, type.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, date.c_str(), -1, SQLITE_TRANSIENT);
@@ -304,11 +320,48 @@ std::optional<Plan> Database::getPlanByTypeAndDate(const std::string& type,
         p.date = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
         auto itemsStr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
         p.items = nlohmann::json::parse(itemsStr).get<std::vector<PlanItem>>();
-        p.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        p.reviewed = sqlite3_column_int(stmt, 4) != 0;
+        p.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
         result = p;
     }
     sqlite3_finalize(stmt);
     return result;
+}
+
+bool Database::markPlanReviewed(int id) {
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_, "UPDATE plans SET reviewed = 1 WHERE id = ?",
+                        -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, id);
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) > 0;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+std::vector<Plan> Database::getUnreviewedDailyPlans(const std::string& beforeDate,
+                                                     const std::string& monday) {
+    std::vector<Plan> plans;
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_,
+        "SELECT id, type, date, items_json, reviewed, created_at FROM plans "
+        "WHERE type = 'daily' AND reviewed = 0 AND date < ? AND date >= ? "
+        "ORDER BY date ASC", -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, beforeDate.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, monday.c_str(), -1, SQLITE_TRANSIENT);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        Plan p;
+        p.id = sqlite3_column_int(stmt, 0);
+        p.type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        p.date = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        auto itemsStr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        p.items = nlohmann::json::parse(itemsStr).get<std::vector<PlanItem>>();
+        p.reviewed = sqlite3_column_int(stmt, 4) != 0;
+        p.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+        plans.push_back(p);
+    }
+    sqlite3_finalize(stmt);
+    return plans;
 }
 
 bool Database::deletePlan(int id) {
@@ -364,6 +417,107 @@ std::vector<ProductivityLog> Database::getLogsByTaskId(int taskId) {
     }
     sqlite3_finalize(stmt);
     return logs;
+}
+
+// ── Weekly Summaries ───────────────────────────────────────────────────
+
+WeeklySummary Database::createSummary(const WeeklySummary& summary) {
+    std::string ts = now();
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "INSERT OR REPLACE INTO weekly_summaries "
+        "(week_date, total_planned, total_completed, total_actual, "
+        "tasks_planned, tasks_completed, tasks_carried_over, "
+        "category_breakdown, completed_tasks, incomplete_tasks, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, summary.week_date.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, summary.total_planned);
+    sqlite3_bind_int(stmt, 3, summary.total_completed);
+    sqlite3_bind_int(stmt, 4, summary.total_actual);
+    sqlite3_bind_int(stmt, 5, summary.tasks_planned);
+    sqlite3_bind_int(stmt, 6, summary.tasks_completed);
+    sqlite3_bind_int(stmt, 7, summary.tasks_carried_over);
+    sqlite3_bind_text(stmt, 8, summary.category_breakdown.dump().c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 9, summary.completed_tasks.dump().c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 10, summary.incomplete_tasks.dump().c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 11, ts.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("Failed to create summary");
+    }
+    int id = static_cast<int>(sqlite3_last_insert_rowid(db_));
+    sqlite3_finalize(stmt);
+
+    WeeklySummary result = summary;
+    result.id = id;
+    result.created_at = ts;
+    return result;
+}
+
+std::optional<WeeklySummary> Database::getSummary(const std::string& weekDate) {
+    std::optional<WeeklySummary> result;
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_,
+        "SELECT id, week_date, total_planned, total_completed, total_actual, "
+        "tasks_planned, tasks_completed, tasks_carried_over, "
+        "category_breakdown, completed_tasks, incomplete_tasks, created_at "
+        "FROM weekly_summaries WHERE week_date = ?", -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, weekDate.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        WeeklySummary s;
+        s.id = sqlite3_column_int(stmt, 0);
+        s.week_date = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        s.total_planned = sqlite3_column_int(stmt, 2);
+        s.total_completed = sqlite3_column_int(stmt, 3);
+        s.total_actual = sqlite3_column_int(stmt, 4);
+        s.tasks_planned = sqlite3_column_int(stmt, 5);
+        s.tasks_completed = sqlite3_column_int(stmt, 6);
+        s.tasks_carried_over = sqlite3_column_int(stmt, 7);
+        s.category_breakdown = nlohmann::json::parse(
+            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 8)));
+        s.completed_tasks = nlohmann::json::parse(
+            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9)));
+        s.incomplete_tasks = nlohmann::json::parse(
+            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10)));
+        s.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11));
+        result = s;
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+std::vector<WeeklySummary> Database::getAllSummaries() {
+    std::vector<WeeklySummary> summaries;
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(db_,
+        "SELECT id, week_date, total_planned, total_completed, total_actual, "
+        "tasks_planned, tasks_completed, tasks_carried_over, "
+        "category_breakdown, completed_tasks, incomplete_tasks, created_at "
+        "FROM weekly_summaries ORDER BY week_date DESC", -1, &stmt, nullptr);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        WeeklySummary s;
+        s.id = sqlite3_column_int(stmt, 0);
+        s.week_date = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        s.total_planned = sqlite3_column_int(stmt, 2);
+        s.total_completed = sqlite3_column_int(stmt, 3);
+        s.total_actual = sqlite3_column_int(stmt, 4);
+        s.tasks_planned = sqlite3_column_int(stmt, 5);
+        s.tasks_completed = sqlite3_column_int(stmt, 6);
+        s.tasks_carried_over = sqlite3_column_int(stmt, 7);
+        s.category_breakdown = nlohmann::json::parse(
+            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 8)));
+        s.completed_tasks = nlohmann::json::parse(
+            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9)));
+        s.incomplete_tasks = nlohmann::json::parse(
+            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10)));
+        s.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11));
+        summaries.push_back(s);
+    }
+    sqlite3_finalize(stmt);
+    return summaries;
 }
 
 // ── Categories ─────────────────────────────────────────────────────────

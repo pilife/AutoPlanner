@@ -47,6 +47,30 @@ static std::vector<std::string> getWeekDays(const std::string& monday) {
     return days;
 }
 
+static std::string todayStr() {
+    auto t = std::time(nullptr);
+    std::tm tm_buf;
+#ifdef _WIN32
+    localtime_s(&tm_buf, &t);
+#else
+    localtime_r(&t, &tm_buf);
+#endif
+    std::ostringstream oss;
+    oss << std::put_time(&tm_buf, "%Y-%m-%d");
+    return oss.str();
+}
+
+// Get remaining weekdays from startDate through Friday of that week
+static std::vector<std::string> getRemainingWeekDays(const std::string& monday,
+                                                      const std::string& startDate) {
+    auto allDays = getWeekDays(monday);
+    std::vector<std::string> remaining;
+    for (const auto& d : allDays) {
+        if (d >= startDate) remaining.push_back(d);
+    }
+    return remaining;
+}
+
 void registerRoutes(httplib::Server& server, Database& db) {
 
     // ── Tasks ──────────────────────────────────────────────────────────
@@ -184,12 +208,11 @@ void registerRoutes(httplib::Server& server, Database& db) {
             }
             std::string monday = getMondayOfWeek(date);
 
-            // Get all incomplete tasks
+            // Get all tasks (including done ones for the weekly record)
             auto allTasks = db.getAllTasks("", "");
-            // Filter to leaf tasks (no children) that are not done
+            // Filter to leaf tasks (no children)
             std::vector<Task> leafTasks;
             for (const auto& t : allTasks) {
-                if (t.status == "done") continue;
                 // Check if this task has children
                 bool hasChildren = false;
                 for (const auto& other : allTasks) {
@@ -228,7 +251,9 @@ void registerRoutes(httplib::Server& server, Database& db) {
         }
     });
 
-    // Generate daily plans from a weekly plan: distribute tasks across Mon-Fri
+    // Generate daily plans from weekly plan: distributes incomplete tasks
+    // across remaining weekdays (from max(monday, today) through Friday).
+    // Returns plans + warning if overloaded.
     server.Post("/api/plans/generate-daily", [&](const httplib::Request& req, httplib::Response& res) {
         try {
             auto body = json::parse(req.body);
@@ -238,6 +263,8 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 return;
             }
             std::string monday = getMondayOfWeek(date);
+            std::string today = todayStr();
+            std::string startDate = (today > monday) ? today : monday;
 
             // Load the weekly plan
             auto weeklyPlan = db.getPlanByTypeAndDate("weekly", monday);
@@ -246,54 +273,325 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 return;
             }
 
-            auto weekDays = getWeekDays(monday);
-            int dailyCapacity = 480; // 8 hours per day in minutes
+            // Filter out completed tasks
+            std::vector<PlanItem> incompleteItems;
+            for (const auto& item : weeklyPlan->items) {
+                auto task = db.getTask(item.task_id);
+                if (task && task->status != "done") {
+                    incompleteItems.push_back(item);
+                }
+            }
 
-            // Distribute weekly items across 5 days
-            std::vector<std::vector<PlanItem>> dailyItems(5);
-            std::vector<int> dayMinutes(5, 0);
+            auto remainingDays = getRemainingWeekDays(monday, startDate);
+            int numDays = static_cast<int>(remainingDays.size());
+            if (numDays == 0) {
+                errorResponse(res, 400, "No remaining weekdays this week.");
+                return;
+            }
+
+            int dailyCapacity = 480; // 8 hours per day
+            int totalRemaining = 0;
+            for (const auto& item : incompleteItems)
+                totalRemaining += item.duration_minutes;
+            int totalCapacity = numDays * dailyCapacity;
+
+            // Distribute across remaining days
+            std::vector<std::vector<PlanItem>> dailyItems(numDays);
+            std::vector<int> dayMinutes(numDays, 0);
             int currentDay = 0;
 
-            for (const auto& item : weeklyPlan->items) {
-                // Find a day with enough capacity
+            for (const auto& item : incompleteItems) {
                 int startDay = currentDay;
-                while (dayMinutes[currentDay] + item.duration_minutes > dailyCapacity) {
-                    currentDay = (currentDay + 1) % 5;
-                    if (currentDay == startDay) break; // all days full, force into current
+                while (currentDay < numDays &&
+                       dayMinutes[currentDay] + item.duration_minutes > dailyCapacity) {
+                    currentDay++;
                 }
-
-                // Assign a time slot
-                int hour = 9 + (dayMinutes[currentDay] / 60);
-                int minute = dayMinutes[currentDay] % 60;
-                char buf[6];
-                snprintf(buf, sizeof(buf), "%02d:%02d", hour, minute);
+                if (currentDay >= numDays) currentDay = numDays - 1; // overflow to last day
 
                 PlanItem scheduled;
                 scheduled.task_id = item.task_id;
-                scheduled.scheduled_time = buf;
+                scheduled.scheduled_time = "";
                 scheduled.duration_minutes = item.duration_minutes;
                 dailyItems[currentDay].push_back(scheduled);
 
                 dayMinutes[currentDay] += item.duration_minutes;
-                if (dayMinutes[currentDay] >= dailyCapacity) {
-                    currentDay = (currentDay + 1) % 5;
+                if (currentDay < numDays - 1 &&
+                    dayMinutes[currentDay] >= dailyCapacity) {
+                    currentDay++;
                 }
             }
 
-            // Save daily plans
-            json result = json::array();
-            for (int i = 0; i < 5; i++) {
+            // Save daily plans (only for remaining days)
+            json plans = json::array();
+            for (int i = 0; i < numDays; i++) {
                 Plan daily;
                 daily.type = "daily";
-                daily.date = weekDays[i];
+                daily.date = remainingDays[i];
                 daily.items = dailyItems[i];
                 auto saved = db.createPlan(daily);
-                result.push_back(saved);
+                plans.push_back(saved);
+            }
+
+            // Build response with warning info
+            json result;
+            result["plans"] = plans;
+            result["remaining_minutes"] = totalRemaining;
+            result["remaining_days"] = numDays;
+            result["daily_capacity"] = dailyCapacity;
+            result["total_capacity"] = totalCapacity;
+
+            if (totalRemaining > totalCapacity) {
+                result["warning"] = "Overloaded: " +
+                    std::to_string(totalRemaining - totalCapacity) +
+                    " minutes of work exceed remaining capacity. "
+                    "Consider adjusting your weekly plan.";
+            } else if (totalRemaining > static_cast<int>(totalCapacity * 0.9)) {
+                result["warning"] = "Near capacity: workload is over 90% of "
+                    "remaining capacity. Consider adjusting priorities.";
             }
 
             jsonResponse(res, 201, result);
         } catch (const std::exception& e) {
             errorResponse(res, 400, e.what());
+        }
+    });
+
+    // Get unreviewed daily plans before a given date (within same week)
+    server.Get("/api/plans/unreviewed", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string before = req.get_param_value("before");
+        if (before.empty()) before = todayStr();
+        std::string monday = getMondayOfWeek(before);
+        auto plans = db.getUnreviewedDailyPlans(before, monday);
+        jsonResponse(res, 200, plans);
+    });
+
+    // Review a daily plan: update task statuses and actual times,
+    // mark plan reviewed, then regenerate remaining daily plans.
+    server.Post("/api/plans/review", [&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            int planId = body.at("plan_id").get<int>();
+            auto taskReviews = body.at("tasks");
+
+            // Update each task
+            for (const auto& tr : taskReviews) {
+                int taskId = tr.at("task_id").get<int>();
+                std::string status = tr.at("status").get<std::string>();
+                int actualMinutes = tr.value("actual_minutes", 0);
+
+                auto task = db.getTask(taskId);
+                if (task) {
+                    Task t = *task;
+                    t.status = status;
+                    t.actual_minutes = actualMinutes;
+                    db.updateTask(taskId, t);
+                }
+            }
+
+            // Mark plan as reviewed
+            db.markPlanReviewed(planId);
+
+            // Get the plan's date to determine week
+            auto plan = db.getPlanByTypeAndDate("daily",
+                body.value("plan_date", todayStr()));
+            // Also try to get plan by id if plan_date not provided
+            std::string monday;
+            if (body.contains("plan_date")) {
+                monday = getMondayOfWeek(body["plan_date"].get<std::string>());
+            } else {
+                monday = getMondayOfWeek(todayStr());
+            }
+
+            // Regenerate remaining daily plans from weekly
+            std::string today = todayStr();
+            std::string startDate = (today > monday) ? today : monday;
+            auto weeklyPlan = db.getPlanByTypeAndDate("weekly", monday);
+
+            json result;
+            result["reviewed"] = true;
+
+            if (weeklyPlan && !weeklyPlan->items.empty()) {
+                // Filter incomplete tasks from weekly plan
+                std::vector<PlanItem> incompleteItems;
+                for (const auto& item : weeklyPlan->items) {
+                    auto task = db.getTask(item.task_id);
+                    if (task && task->status != "done") {
+                        incompleteItems.push_back(item);
+                    }
+                }
+
+                auto remainingDays = getRemainingWeekDays(monday, startDate);
+                int numDays = static_cast<int>(remainingDays.size());
+                int dailyCapacity = 480;
+                int totalRemaining = 0;
+                for (const auto& item : incompleteItems)
+                    totalRemaining += item.duration_minutes;
+                int totalCapacity = numDays * dailyCapacity;
+
+                if (numDays > 0) {
+                    std::vector<std::vector<PlanItem>> dailyItems(numDays);
+                    std::vector<int> dayMinutes(numDays, 0);
+                    int currentDay = 0;
+
+                    for (const auto& item : incompleteItems) {
+                        while (currentDay < numDays &&
+                               dayMinutes[currentDay] + item.duration_minutes > dailyCapacity) {
+                            currentDay++;
+                        }
+                        if (currentDay >= numDays) currentDay = numDays - 1;
+
+                        PlanItem scheduled;
+                        scheduled.task_id = item.task_id;
+                        scheduled.scheduled_time = "";
+                        scheduled.duration_minutes = item.duration_minutes;
+                        dailyItems[currentDay].push_back(scheduled);
+                        dayMinutes[currentDay] += item.duration_minutes;
+
+                        if (currentDay < numDays - 1 &&
+                            dayMinutes[currentDay] >= dailyCapacity) {
+                            currentDay++;
+                        }
+                    }
+
+                    json plans = json::array();
+                    for (int i = 0; i < numDays; i++) {
+                        Plan daily;
+                        daily.type = "daily";
+                        daily.date = remainingDays[i];
+                        daily.items = dailyItems[i];
+                        auto saved = db.createPlan(daily);
+                        plans.push_back(saved);
+                    }
+                    result["plans"] = plans;
+                }
+
+                result["remaining_minutes"] = totalRemaining;
+                result["total_capacity"] = numDays * dailyCapacity;
+
+                if (totalRemaining > totalCapacity) {
+                    result["warning"] = "Overloaded: " +
+                        std::to_string(totalRemaining - totalCapacity) +
+                        " minutes of work exceed remaining capacity. "
+                        "Consider adjusting your weekly plan.";
+                } else if (totalRemaining > static_cast<int>(totalCapacity * 0.9)) {
+                    result["warning"] = "Near capacity: workload is over 90% of "
+                        "remaining capacity. Consider adjusting priorities.";
+                }
+            }
+
+            jsonResponse(res, 200, result);
+        } catch (const std::exception& e) {
+            errorResponse(res, 400, e.what());
+        }
+    });
+
+    // ── Weekly Summary ──────────────────────────────────────────────────
+
+    // Generate summary for a week from plan and task data
+    server.Post("/api/summaries/generate", [&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            std::string date = body.value("date", "");
+            if (date.empty()) {
+                errorResponse(res, 400, "date is required");
+                return;
+            }
+            std::string monday = getMondayOfWeek(date);
+
+            auto weeklyPlan = db.getPlanByTypeAndDate("weekly", monday);
+            if (!weeklyPlan || weeklyPlan->items.empty()) {
+                errorResponse(res, 400, "No weekly plan found for this week.");
+                return;
+            }
+
+            WeeklySummary summary;
+            summary.week_date = monday;
+
+            std::map<std::string, int> catCompleted;
+            std::map<std::string, int> catPlanned;
+
+            // Helper to find root task
+            auto findRoot = [&](int taskId) -> std::pair<int, std::string> {
+                auto t = db.getTask(taskId);
+                while (t && t->parent_id > 0) {
+                    t = db.getTask(t->parent_id);
+                }
+                return t ? std::make_pair(t->id, t->title)
+                         : std::make_pair(taskId, std::string("Task #") + std::to_string(taskId));
+            };
+
+            for (const auto& item : weeklyPlan->items) {
+                auto task = db.getTask(item.task_id);
+                if (!task) continue;
+
+                auto [rootId, rootTitle] = findRoot(item.task_id);
+
+                summary.tasks_planned++;
+                summary.total_planned += item.duration_minutes;
+
+                std::string cat = task->category.empty() ? "N/A" : task->category;
+                catPlanned[cat] += item.duration_minutes;
+
+                if (task->status == "done") {
+                    summary.tasks_completed++;
+                    summary.total_completed += item.duration_minutes;
+                    summary.total_actual += task->actual_minutes > 0
+                        ? task->actual_minutes : item.duration_minutes;
+                    catCompleted[cat] += item.duration_minutes;
+
+                    summary.completed_tasks.push_back({
+                        {"task_id", task->id},
+                        {"title", task->title},
+                        {"category", cat},
+                        {"planned_minutes", item.duration_minutes},
+                        {"actual_minutes", task->actual_minutes},
+                        {"root_task_id", rootId},
+                        {"root_task_title", rootTitle}
+                    });
+                } else {
+                    summary.tasks_carried_over++;
+                    summary.incomplete_tasks.push_back({
+                        {"task_id", task->id},
+                        {"title", task->title},
+                        {"category", cat},
+                        {"status", task->status},
+                        {"planned_minutes", item.duration_minutes},
+                        {"root_task_id", rootId},
+                        {"root_task_title", rootTitle}
+                    });
+                }
+            }
+
+            // Category breakdown
+            for (const auto& [cat, planned] : catPlanned) {
+                int completed = catCompleted.count(cat) ? catCompleted[cat] : 0;
+                summary.category_breakdown[cat] = {
+                    {"planned", planned},
+                    {"completed", completed}
+                };
+            }
+
+            auto saved = db.createSummary(summary);
+            jsonResponse(res, 201, saved);
+        } catch (const std::exception& e) {
+            errorResponse(res, 400, e.what());
+        }
+    });
+
+    // Get summary for a specific week
+    server.Get("/api/summaries", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string date = req.get_param_value("date");
+        if (!date.empty()) {
+            std::string monday = getMondayOfWeek(date);
+            auto summary = db.getSummary(monday);
+            if (summary) {
+                jsonResponse(res, 200, *summary);
+            } else {
+                jsonResponse(res, 200, json::object());
+            }
+        } else {
+            auto all = db.getAllSummaries();
+            jsonResponse(res, 200, all);
         }
     });
 

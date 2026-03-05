@@ -7,6 +7,8 @@ cc_binary(
         "src/models.h",
         "src/routes.cpp",
         "src/routes.h",
+        "src/seed.cpp",
+        "src/seed.h",
     ],
     copts = select({
         "@bazel_tools//src/conditions:windows": ["/std:c++17"],

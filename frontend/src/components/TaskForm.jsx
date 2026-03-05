@@ -1,11 +1,14 @@
 import { useState } from 'react';
+import { toMinutes, fromMinutes, bestUnit } from '../helpers';
 
 export default function TaskForm({ task, allTasks = [], onSave, onCancel }) {
+  const initUnit = bestUnit(task.estimated_minutes || 30);
   const [form, setForm] = useState({
     title: task.title || '',
     description: task.description || '',
     priority: task.priority || 3,
-    estimated_minutes: task.estimated_minutes || 30,
+    estimatedValue: fromMinutes(task.estimated_minutes || 30, initUnit),
+    estimatedUnit: initUnit,
     category: task.category || '',
     status: task.status || 'todo',
     due_date: task.due_date || '',
@@ -20,7 +23,7 @@ export default function TaskForm({ task, allTasks = [], onSave, onCancel }) {
       ...form,
       id: task.id || undefined,
       priority: Number(form.priority),
-      estimated_minutes: Number(form.estimated_minutes),
+      estimated_minutes: toMinutes(form.estimatedValue, form.estimatedUnit),
       parent_id: Number(form.parent_id),
     });
   };
@@ -90,16 +93,28 @@ export default function TaskForm({ task, allTasks = [], onSave, onCancel }) {
               </select>
             </div>
             <div className="form-group">
-              <label>Estimated (min)</label>
-              <input type="number" min="5" step="5" value={form.estimated_minutes}
-                     onChange={set('estimated_minutes')} />
+              <label>Estimated Time</label>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input type="number" min="0.5" step="0.5" value={form.estimatedValue}
+                       onChange={set('estimatedValue')} style={{ flex: 1 }} />
+                <select value={form.estimatedUnit} onChange={set('estimatedUnit')} style={{ width: 90 }}>
+                  <option value="minutes">min</option>
+                  <option value="hours">hours</option>
+                  <option value="days">days</option>
+                </select>
+              </div>
             </div>
           </div>
           <div className="form-row">
             <div className="form-group">
               <label>Category</label>
-              <input value={form.category} onChange={set('category')}
-                     placeholder="e.g. Work, Personal" />
+              <select value={form.category} onChange={set('category')}>
+                <option value="">N/A</option>
+                <option value="Design">Design</option>
+                <option value="Coding">Coding</option>
+                <option value="Test">Test</option>
+                <option value="Monitor">Monitor</option>
+              </select>
             </div>
             <div className="form-group">
               <label>Due Date</label>

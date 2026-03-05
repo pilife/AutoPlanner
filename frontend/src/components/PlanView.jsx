@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { getPlan, savePlan, generateWeeklyPlan, generateDailyPlans, getTasks } from '../api';
+import { getPlan, savePlan, generateWeeklyPlan, generateDailyPlans, getTasks, getUnreviewedPlans, updateTask } from '../api';
+import { formatDuration, getTaskPath } from '../helpers';
+import ReviewModal from './ReviewModal';
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -26,30 +28,191 @@ function getWeekDays(monday) {
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
+// Build hierarchy tree from flat plan items
+function buildPlanTree(items, taskMap) {
+  // Find root ancestor for a task
+  const getRootId = (taskId) => {
+    let current = taskMap[taskId];
+    while (current && current.parent_id && taskMap[current.parent_id]) {
+      current = taskMap[current.parent_id];
+    }
+    return current ? current.id : taskId;
+  };
+
+  // Group items by root ancestor
+  const groups = {};
+  const rootOrder = [];
+  for (const item of items) {
+    const rootId = getRootId(item.task_id);
+    if (!groups[rootId]) {
+      groups[rootId] = [];
+      rootOrder.push(rootId);
+    }
+    groups[rootId].push(item);
+  }
+
+  return rootOrder.map(rootId => ({
+    rootId,
+    rootTask: taskMap[rootId],
+    items: groups[rootId],
+  }));
+}
+
+function DailyPlansDragGrid({ dailyPlans, taskMap, onPlansUpdated }) {
+  const [dragItem, setDragItem] = useState(null); // { fromDate, itemIndex, item }
+  const [dragOverDate, setDragOverDate] = useState(null);
+  const today = todayStr();
+
+  const handleDragStart = (e, date, itemIndex, item) => {
+    setDragItem({ fromDate: date, itemIndex, item });
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e, date) => {
+    if (date < today) return; // can't drop on past days
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverDate(date);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverDate(null);
+  };
+
+  const handleDrop = async (e, toDate) => {
+    e.preventDefault();
+    setDragOverDate(null);
+    if (!dragItem || dragItem.fromDate === toDate || toDate < today) return;
+
+    const fromPlan = dailyPlans.find(dp => dp.date === dragItem.fromDate)?.plan;
+    const toPlan = dailyPlans.find(dp => dp.date === toDate)?.plan;
+    if (!fromPlan) return;
+
+    // Remove from source
+    const newFromItems = fromPlan.items.filter((_, i) => i !== dragItem.itemIndex);
+    // Add to target
+    const newToItems = [...(toPlan?.items || []), dragItem.item];
+
+    try {
+      await savePlan({ ...fromPlan, items: newFromItems });
+      if (toPlan) {
+        await savePlan({ ...toPlan, items: newToItems });
+      } else {
+        await savePlan({ type: 'daily', date: toDate, items: newToItems });
+      }
+      onPlansUpdated();
+    } catch (err) {
+      alert('Failed to move task: ' + err.message);
+    }
+    setDragItem(null);
+  };
+
+  const handleDragEnd = () => {
+    setDragItem(null);
+    setDragOverDate(null);
+  };
+
+  return (
+    <div>
+      <h3 style={{ marginBottom: 16 }}>Daily Plans</h3>
+      <p style={{ color: '#636e72', fontSize: '0.8rem', marginBottom: 12 }}>
+        Drag tasks between days to reschedule (past days are locked).
+      </p>
+      <div className="daily-plans-grid">
+        {dailyPlans.map((dp, i) => {
+          const isPast = dp.date < today;
+          const isDropTarget = dragOverDate === dp.date;
+
+          return (
+            <div
+              key={dp.date}
+              className={`card daily-plan-card ${isPast ? 'daily-plan-past' : ''} ${isDropTarget ? 'daily-plan-drop-target' : ''}`}
+              onDragOver={e => handleDragOver(e, dp.date)}
+              onDragLeave={handleDragLeave}
+              onDrop={e => handleDrop(e, dp.date)}
+            >
+              <h4 style={{ marginBottom: 10 }}>
+                {DAY_NAMES[i]} &mdash; {dp.date}
+                {isPast && <span style={{ fontSize: '0.75rem', color: '#b2bec3', marginLeft: 8 }}>(locked)</span>}
+              </h4>
+              {!dp.plan || dp.plan.items.length === 0 ? (
+                <div className="daily-plan-empty">No tasks</div>
+              ) : (
+                (() => {
+                  const groups = buildPlanTree(dp.plan.items, taskMap);
+                  return groups.map(group => {
+                    const groupMinutes = group.items.reduce((s, it) => s + it.duration_minutes, 0);
+                    return (
+                      <div key={group.rootId} style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#2d3436', padding: '4px 0', borderBottom: '1px solid #eee', marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
+                          <span>{group.rootTask?.title || `Task #${group.rootId}`}</span>
+                          <span style={{ color: '#636e72', fontWeight: 400 }}>{formatDuration(groupMinutes)}</span>
+                        </div>
+                        <div className="plan-timeline" style={{ gap: 4 }}>
+                          {group.items.map(item => {
+                            const task = taskMap[item.task_id];
+                            const flatIdx = dp.plan.items.findIndex(it => it.task_id === item.task_id);
+                            const isLeafRoot = item.task_id === group.rootId;
+                            return (
+                              <div
+                                key={`${item.task_id}-${flatIdx}`}
+                                className={`plan-slot ${!isPast ? 'plan-slot-draggable' : ''}`}
+                                style={{ paddingLeft: isLeafRoot ? 16 : 28 }}
+                                draggable={!isPast}
+                                onDragStart={e => !isPast && handleDragStart(e, dp.date, flatIdx, item)}
+                                onDragEnd={handleDragEnd}
+                              >
+                                {!isPast && <span className="drag-handle">{'\u2630'}</span>}
+                                <div style={{ flex: 1 }}>
+                                  <strong style={{ fontSize: '0.85rem' }}>{task ? task.title : `Task #${item.task_id}`}</strong>
+                                </div>
+                                <span className="duration">{formatDuration(item.duration_minutes)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function PlanView() {
   const { type } = useParams();
   const [date, setDate] = useState(todayStr());
   const [plan, setPlan] = useState(null);
   const [dailyPlans, setDailyPlans] = useState([]);
+  const [dailyWarning, setDailyWarning] = useState('');
   const [taskMap, setTaskMap] = useState({});
+  const [allTasks, setAllTasks] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [unreviewedPlans, setUnreviewedPlans] = useState([]);
 
   const monday = getMondayOfWeek(date);
 
   const load = async () => {
     setLoading(true);
     setError('');
+    setDailyWarning('');
     try {
       const tasks = await getTasks();
       const map = {};
       for (const t of tasks) map[t.id] = t;
       setTaskMap(map);
+      setAllTasks(tasks);
 
       if (type === 'weekly') {
         const planData = await getPlan('weekly', date);
         setPlan(planData && planData.id ? planData : null);
-        // Also load daily plans for this week
         const weekDays = getWeekDays(monday);
         const dailies = await Promise.all(weekDays.map(d => getPlan('daily', d)));
         setDailyPlans(dailies.map((dp, i) => ({
@@ -60,6 +223,39 @@ export default function PlanView() {
         const planData = await getPlan('daily', date);
         setPlan(planData && planData.id ? planData : null);
         setDailyPlans([]);
+        // Check for unreviewed past daily plans
+        try {
+          const today = todayStr();
+          const unreviewed = await getUnreviewedPlans(today);
+          setUnreviewedPlans(unreviewed.filter(p => p.items && p.items.length > 0));
+        } catch (_) {
+          setUnreviewedPlans([]);
+        }
+        // Check for overload warning by looking at weekly context
+        try {
+          const weeklyPlan = await getPlan('weekly', date);
+          if (weeklyPlan && weeklyPlan.id) {
+            const today = todayStr();
+            const weekDays = getWeekDays(getMondayOfWeek(date));
+            const remainingDays = weekDays.filter(d => d >= today).length;
+            const dailyCapacity = 480;
+            let remaining = 0;
+            for (const item of weeklyPlan.items) {
+              const t = map[item.task_id];
+              if (t && t.status !== 'done') remaining += item.duration_minutes;
+            }
+            const totalCap = remainingDays * dailyCapacity;
+            if (remaining > totalCap) {
+              setDailyWarning(
+                `Overloaded: ${formatDuration(remaining - totalCap)} of work exceeds remaining capacity (${remainingDays} days left). Consider adjusting your weekly plan.`
+              );
+            } else if (remaining > totalCap * 0.9) {
+              setDailyWarning(
+                `Near capacity: workload is over 90% of remaining capacity (${remainingDays} days left). Consider adjusting priorities.`
+              );
+            }
+          }
+        } catch (_) {}
       }
     } catch (e) {
       setError(e.message);
@@ -80,10 +276,20 @@ export default function PlanView() {
     setLoading(false);
   };
 
+  const handleReviewComplete = () => {
+    setUnreviewedPlans([]);
+    load();
+  };
+
+  const handleReviewSkip = () => {
+    setUnreviewedPlans([]);
+  };
+
   const handleGenerateDaily = async () => {
     setLoading(true);
     try {
-      await generateDailyPlans(date);
+      const result = await generateDailyPlans(date);
+      if (result.warning) setDailyWarning(result.warning);
       load();
     } catch (e) {
       setError(e.message);
@@ -94,9 +300,8 @@ export default function PlanView() {
   const handleRemoveItem = async (index) => {
     if (!plan) return;
     const newItems = plan.items.filter((_, i) => i !== index);
-    const updated = { ...plan, items: newItems };
     try {
-      await savePlan(updated);
+      await savePlan({ ...plan, items: newItems });
       load();
     } catch (e) {
       setError(e.message);
@@ -129,9 +334,39 @@ export default function PlanView() {
     }
   };
 
+  const handleAddTask = async (taskId) => {
+    if (!plan) return;
+    const task = taskMap[taskId];
+    if (!task) return;
+    const newItem = {
+      task_id: taskId,
+      scheduled_time: '',
+      duration_minutes: task.estimated_minutes,
+    };
+    try {
+      await savePlan({ ...plan, items: [...plan.items, newItem] });
+      setShowAddTask(false);
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  // ── Weekly Plan View ─────────────────────────────────────────────
   if (type === 'weekly') {
     const totalMinutes = plan ? plan.items.reduce((sum, it) => sum + it.duration_minutes, 0) : 0;
-    const totalHours = (totalMinutes / 60).toFixed(1);
+    const planItemIds = new Set(plan ? plan.items.map(it => it.task_id) : []);
+
+    // Tasks available to add: leaf tasks not already in plan, not done
+    const hasChildren = (id) => allTasks.some(t => t.parent_id === id);
+    const availableTasks = allTasks.filter(
+      t => !planItemIds.has(t.id) && t.status !== 'done' && !hasChildren(t.id)
+    );
+
+    const planTree = plan ? buildPlanTree(plan.items, taskMap) : [];
+
+    // Map from item task_id to its flat index in plan.items
+    const getItemIndex = (taskId) => plan.items.findIndex(it => it.task_id === taskId);
 
     return (
       <div>
@@ -145,7 +380,7 @@ export default function PlanView() {
           </div>
         </div>
         <p style={{ color: '#636e72', marginBottom: 16 }}>
-          Week of {monday} &mdash; {plan ? `${plan.items.length} tasks, ${totalHours}h total` : 'No plan yet'}
+          Week of {monday} &mdash; {plan ? `${plan.items.length} tasks, ${formatDuration(totalMinutes)} total` : 'No plan yet'}
         </p>
 
         {error && <div style={{ color: '#d63031', marginBottom: 12 }}>{error}</div>}
@@ -158,51 +393,97 @@ export default function PlanView() {
           </div>
         ) : (
           <>
+            {/* Hierarchy view of weekly plan */}
             <div className="card">
-              <table className="task-table">
-                <thead>
-                  <tr>
-                    <th>Order</th>
-                    <th></th>
-                    <th>Task</th>
-                    <th>Category</th>
-                    <th>Priority</th>
-                    <th>Duration</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {plan.items.map((item, i) => {
-                    const task = taskMap[item.task_id];
-                    return (
-                      <tr key={i}>
-                        <td>
-                          <div style={{ display: 'flex', gap: 2 }}>
-                            <button className="btn btn-sm" onClick={() => handleMoveItem(i, -1)} disabled={i === 0}>{'\u25B2'}</button>
-                            <button className="btn btn-sm" onClick={() => handleMoveItem(i, 1)} disabled={i === plan.items.length - 1}>{'\u25BC'}</button>
+              {planTree.map(group => {
+                const groupMinutes = group.items.reduce((s, it) => s + it.duration_minutes, 0);
+                const isLeafRoot = group.items.length === 1 && group.items[0].task_id === group.rootId;
+
+                return (
+                  <div key={group.rootId} className="plan-group">
+                    <div className="plan-group-header">
+                      <span className={`priority priority-${group.rootTask?.priority || 3}`} />
+                      <strong>{group.rootTask?.title || `Task #${group.rootId}`}</strong>
+                      <span style={{ color: '#636e72', fontSize: '0.85rem', marginLeft: 8 }}>
+                        ({formatDuration(groupMinutes)})
+                      </span>
+                      {group.rootTask?.category && (
+                        <span style={{ color: '#b2bec3', fontSize: '0.8rem', marginLeft: 8 }}>
+                          {group.rootTask.category}
+                        </span>
+                      )}
+                    </div>
+                    <div className="plan-group-items">
+                      {group.items.map(item => {
+                        const task = taskMap[item.task_id];
+                        const idx = getItemIndex(item.task_id);
+                        const isDone = task?.status === 'done';
+                        return (
+                          <div key={item.task_id}
+                               className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}>
+                            <div style={{ display: 'flex', gap: 2, marginRight: 8 }}>
+                              <button className="btn btn-sm" onClick={() => handleMoveItem(idx, -1)}
+                                      disabled={idx === 0}>{'\u25B2'}</button>
+                              <button className="btn btn-sm" onClick={() => handleMoveItem(idx, 1)}
+                                      disabled={idx === plan.items.length - 1}>{'\u25BC'}</button>
+                            </div>
+                            <div style={{ flex: 1 }}>
+                              {!isLeafRoot && (
+                                <div style={{ fontSize: '0.75rem', color: '#999' }}>
+                                  {getTaskPath(item.task_id, taskMap)}
+                                </div>
+                              )}
+                              <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
+                                {task ? task.title : `Task #${item.task_id}`}
+                              </span>
+                              {isDone && <span className="status-badge status-done" style={{ marginLeft: 8 }}>done</span>}
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <input type="number" min="5" step="5" value={item.duration_minutes}
+                                     onChange={e => handleDurationChange(idx, e.target.value)}
+                                     style={{ width: 60 }} />
+                              <span style={{ color: '#636e72', fontSize: '0.8rem' }}>
+                                ({formatDuration(item.duration_minutes)})
+                              </span>
+                              <button className="btn btn-sm btn-danger"
+                                      onClick={() => handleRemoveItem(idx)}>Remove</button>
+                            </div>
                           </div>
-                        </td>
-                        <td><span className={`priority priority-${task?.priority || 3}`} /></td>
-                        <td>{task ? task.title : `Task #${item.task_id}`}</td>
-                        <td>{task?.category || '-'}</td>
-                        <td>{task ? ['', 'Critical', 'High', 'Medium', 'Low', 'Minimal'][task.priority] : '-'}</td>
-                        <td>
-                          <input
-                            type="number" min="5" step="5"
-                            value={item.duration_minutes}
-                            onChange={e => handleDurationChange(i, e.target.value)}
-                            style={{ width: 70 }}
-                          />
-                          <span style={{ marginLeft: 4, color: '#636e72', fontSize: '0.8rem' }}>min</span>
-                        </td>
-                        <td>
-                          <button className="btn btn-sm btn-danger" onClick={() => handleRemoveItem(i)}>Remove</button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Add task button */}
+            <div style={{ margin: '16px 0' }}>
+              {showAddTask ? (
+                <div className="card" style={{ padding: 16 }}>
+                  <label style={{ fontWeight: 500, marginBottom: 8, display: 'block' }}>Add task to weekly plan:</label>
+                  {availableTasks.length === 0 ? (
+                    <p style={{ color: '#b2bec3' }}>No available tasks to add.</p>
+                  ) : (
+                    <select
+                      defaultValue=""
+                      onChange={e => { if (e.target.value) handleAddTask(Number(e.target.value)); }}
+                      style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid #dfe6e9' }}
+                    >
+                      <option value="" disabled>Select a task...</option>
+                      {availableTasks.map(t => (
+                        <option key={t.id} value={t.id}>
+                          {t.parent_id ? getTaskPath(t.id, taskMap) : t.title}
+                          {' '}({formatDuration(t.estimated_minutes)})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <button className="btn" style={{ marginTop: 8 }} onClick={() => setShowAddTask(false)}>Cancel</button>
+                </div>
+              ) : (
+                <button className="btn" onClick={() => setShowAddTask(true)}>+ Add Task to Plan</button>
+              )}
             </div>
 
             <div style={{ margin: '24px 0' }}>
@@ -212,34 +493,11 @@ export default function PlanView() {
             </div>
 
             {dailyPlans.some(dp => dp.plan) && (
-              <div>
-                <h3 style={{ marginBottom: 16 }}>Daily Plans</h3>
-                <div className="daily-plans-grid">
-                  {dailyPlans.map((dp, i) => (
-                    <div key={dp.date} className="card" style={{ marginBottom: 12 }}>
-                      <h4 style={{ marginBottom: 10 }}>{DAY_NAMES[i]} &mdash; {dp.date}</h4>
-                      {!dp.plan || dp.plan.items.length === 0 ? (
-                        <div style={{ color: '#b2bec3', fontSize: '0.85rem' }}>No tasks</div>
-                      ) : (
-                        <div className="plan-timeline">
-                          {dp.plan.items.map((item, j) => {
-                            const task = taskMap[item.task_id];
-                            return (
-                              <div key={j} className="plan-slot">
-                                <span className="time">{item.scheduled_time}</span>
-                                <div style={{ flex: 1 }}>
-                                  <strong>{task ? task.title : `Task #${item.task_id}`}</strong>
-                                </div>
-                                <span className="duration">{item.duration_minutes} min</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <DailyPlansDragGrid
+                dailyPlans={dailyPlans}
+                taskMap={taskMap}
+                onPlansUpdated={load}
+              />
             )}
           </>
         )}
@@ -248,14 +506,37 @@ export default function PlanView() {
   }
 
   // ── Daily Plan View ────────────────────────────────────────────────
+  // Show review modal if there are unreviewed past plans
+  if (unreviewedPlans.length > 0) {
+    return (
+      <ReviewModal
+        plans={unreviewedPlans}
+        taskMap={taskMap}
+        onComplete={handleReviewComplete}
+        onSkip={handleReviewSkip}
+      />
+    );
+  }
+
   return (
     <div>
       <div className="page-header">
         <h2>Daily Plan</h2>
-        <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+          <button className="btn btn-primary" onClick={handleGenerateDaily} disabled={loading}>
+            Refresh from Weekly
+          </button>
+        </div>
       </div>
 
       {error && <div style={{ color: '#d63031', marginBottom: 12 }}>{error}</div>}
+
+      {dailyWarning && (
+        <div className="warning-banner">
+          {dailyWarning}
+        </div>
+      )}
 
       {loading ? (
         <div className="empty">Loading...</div>
@@ -266,18 +547,57 @@ export default function PlanView() {
       ) : plan.items.length === 0 ? (
         <div className="empty">No tasks scheduled for this day.</div>
       ) : (
-        <div className="plan-timeline">
-          {plan.items.map((item, i) => {
-            const task = taskMap[item.task_id];
+        <div>
+          {buildPlanTree(plan.items, taskMap).map(group => {
+            const groupMinutes = group.items.reduce((s, it) => s + it.duration_minutes, 0);
+            const groupDone = group.items.every(it => taskMap[it.task_id]?.status === 'done');
             return (
-              <div key={i} className="plan-slot">
-                <span className="time">{item.scheduled_time}</span>
-                <div style={{ flex: 1 }}>
-                  <strong>{task ? task.title : `Task #${item.task_id}`}</strong>
-                  {task && <div style={{ fontSize: '0.8rem', color: '#636e72' }}>{task.category}</div>}
+              <div key={group.rootId} className="plan-group">
+                <div className="plan-group-header">
+                  <span className={`priority priority-${group.rootTask?.priority || 3}`} />
+                  <strong>{group.rootTask?.title || `Task #${group.rootId}`}</strong>
+                  <span style={{ color: '#636e72', fontSize: '0.85rem', marginLeft: 8 }}>
+                    ({formatDuration(groupMinutes)})
+                  </span>
+                  {group.rootTask?.category && (
+                    <span style={{ color: '#b2bec3', fontSize: '0.8rem', marginLeft: 8 }}>
+                      {group.rootTask.category}
+                    </span>
+                  )}
+                  {groupDone && <span className="status-badge status-done" style={{ marginLeft: 8 }}>done</span>}
                 </div>
-                <span className="duration">{item.duration_minutes} min</span>
-                {task && <span className={`priority priority-${task.priority}`} />}
+                <div className="plan-group-items">
+                  {group.items.map((item, j) => {
+                    const task = taskMap[item.task_id];
+                    const isDone = task?.status === 'done';
+                    const isLeafRoot = group.items.length === 1 && item.task_id === group.rootId;
+                    return (
+                      <div key={item.task_id} className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}>
+                        <div style={{ flex: 1 }}>
+                          {!isLeafRoot && (
+                            <div style={{ fontSize: '0.75rem', color: '#999' }}>
+                              {getTaskPath(item.task_id, taskMap)}
+                            </div>
+                          )}
+                          <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
+                            {task ? task.title : `Task #${item.task_id}`}
+                          </span>
+                          {task && <span style={{ fontSize: '0.8rem', color: '#636e72', marginLeft: 8 }}>{task.category}</span>}
+                        </div>
+                        <span className="duration">{formatDuration(item.duration_minutes)}</span>
+                        <button
+                          className={`btn btn-sm ${isDone ? '' : 'btn-primary'}`}
+                          onClick={async () => {
+                            await updateTask(item.task_id, { status: isDone ? 'todo' : 'done' });
+                            load();
+                          }}
+                        >
+                          {isDone ? 'Undo' : 'Done'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             );
           })}

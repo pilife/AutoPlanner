@@ -65,19 +65,51 @@ struct Plan {
     std::string type;   // "daily" or "weekly"
     std::string date;   // YYYY-MM-DD
     std::vector<PlanItem> items;
+    bool reviewed = false;
     std::string created_at;
 };
 
 inline void to_json(nlohmann::json& j, const Plan& p) {
     j = {{"id", p.id}, {"type", p.type}, {"date", p.date},
-         {"items", p.items}, {"created_at", p.created_at}};
+         {"items", p.items}, {"reviewed", p.reviewed},
+         {"created_at", p.created_at}};
 }
 
 inline void from_json(const nlohmann::json& j, Plan& p) {
-    if (j.contains("id"))    j.at("id").get_to(p.id);
-    if (j.contains("type"))  j.at("type").get_to(p.type);
-    if (j.contains("date"))  j.at("date").get_to(p.date);
+    if (j.contains("id"))       j.at("id").get_to(p.id);
+    if (j.contains("type"))     j.at("type").get_to(p.type);
+    if (j.contains("date"))     j.at("date").get_to(p.date);
+    if (j.contains("reviewed")) j.at("reviewed").get_to(p.reviewed);
     if (j.contains("items")) j.at("items").get_to(p.items);
+}
+
+struct WeeklySummary {
+    int id = 0;
+    std::string week_date;       // Monday of the week
+    int total_planned = 0;       // total planned minutes
+    int total_completed = 0;     // completed task minutes
+    int total_actual = 0;        // actual minutes spent
+    int tasks_planned = 0;
+    int tasks_completed = 0;
+    int tasks_carried_over = 0;  // tasks not finished
+    nlohmann::json category_breakdown = nlohmann::json::object();
+    nlohmann::json completed_tasks = nlohmann::json::array();
+    nlohmann::json incomplete_tasks = nlohmann::json::array();
+    std::string created_at;
+};
+
+inline void to_json(nlohmann::json& j, const WeeklySummary& s) {
+    j = {
+        {"id", s.id}, {"week_date", s.week_date},
+        {"total_planned", s.total_planned}, {"total_completed", s.total_completed},
+        {"total_actual", s.total_actual},
+        {"tasks_planned", s.tasks_planned}, {"tasks_completed", s.tasks_completed},
+        {"tasks_carried_over", s.tasks_carried_over},
+        {"category_breakdown", s.category_breakdown},
+        {"completed_tasks", s.completed_tasks},
+        {"incomplete_tasks", s.incomplete_tasks},
+        {"created_at", s.created_at}
+    };
 }
 
 struct ProductivityLog {
