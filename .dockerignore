@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+**/build
+**/bazel-*
+**/*.db
+**/*.db-shm
+**/*.db-wal
+.git
+.claude
