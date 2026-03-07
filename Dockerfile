@@ -7,7 +7,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Stage 2: Build backend
-FROM ubuntu:22.04 AS backend-build
+FROM ubuntu:24.04 AS backend-build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
