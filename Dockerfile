@@ -18,7 +18,7 @@ RUN cmake -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --config Release -j$(nproc)
 
 # Stage 3: Runtime
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
