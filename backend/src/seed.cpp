@@ -32,15 +32,17 @@ static std::string getMondayOfWeek(const std::string& dateStr) {
 }
 
 void seedIfEmpty(Database& db) {
-    // Only seed if no tasks exist
-    auto existing = db.getAllTasks("", "");
+    // Seed uses user_id=0 (demo user, not a real authenticated user)
+    const int demoUser = 0;
+
+    auto existing = db.getAllTasks(demoUser, "", "");
     if (!existing.empty()) return;
 
     std::string today = dateOffset(0);
     std::string yesterday = dateOffset(-1);
     std::string dayBefore = dateOffset(-2);
     std::string tomorrow = dateOffset(1);
-    std::string friday = dateOffset(4); // rough, just for due dates
+    std::string friday = dateOffset(4);
     std::string monday = getMondayOfWeek(today);
 
     // ── Root tasks (projects) ──────────────────────────────────────
@@ -50,21 +52,21 @@ void seedIfEmpty(Database& db) {
     auth.priority = 1;
     auth.category = "Coding";
     auth.due_date = friday;
-    auto authSaved = db.createTask(auth); // id=1
+    auto authSaved = db.createTask(demoUser, auth);
 
     Task dashboard;
     dashboard.title = "Analytics Dashboard";
     dashboard.priority = 2;
     dashboard.category = "Design";
     dashboard.due_date = friday;
-    auto dashSaved = db.createTask(dashboard); // id=2
+    auto dashSaved = db.createTask(demoUser, dashboard);
 
     Task infra;
     infra.title = "Infrastructure Monitoring";
     infra.priority = 2;
     infra.category = "Monitor";
     infra.due_date = friday;
-    auto infraSaved = db.createTask(infra); // id=3
+    auto infraSaved = db.createTask(demoUser, infra);
 
     // ── Auth subtasks ──────────────────────────────────────────────
 
@@ -76,7 +78,7 @@ void seedIfEmpty(Database& db) {
     authDesign.category = "Design";
     authDesign.status = "done";
     authDesign.actual_minutes = 90;
-    auto authDesignSaved = db.createTask(authDesign); // id=4
+    auto authDesignSaved = db.createTask(demoUser, authDesign);
 
     Task authImpl;
     authImpl.title = "Implement OAuth2 flow";
@@ -85,7 +87,7 @@ void seedIfEmpty(Database& db) {
     authImpl.estimated_minutes = 240;
     authImpl.category = "Coding";
     authImpl.status = "in_progress";
-    auto authImplSaved = db.createTask(authImpl); // id=5
+    auto authImplSaved = db.createTask(demoUser, authImpl);
 
     Task authTest;
     authTest.title = "Write auth integration tests";
@@ -93,7 +95,7 @@ void seedIfEmpty(Database& db) {
     authTest.parent_id = authSaved.id;
     authTest.estimated_minutes = 180;
     authTest.category = "Test";
-    auto authTestSaved = db.createTask(authTest); // id=6
+    auto authTestSaved = db.createTask(demoUser, authTest);
 
     Task authReview;
     authReview.title = "Code review auth module";
@@ -101,7 +103,7 @@ void seedIfEmpty(Database& db) {
     authReview.parent_id = authSaved.id;
     authReview.estimated_minutes = 60;
     authReview.category = "Coding";
-    auto authReviewSaved = db.createTask(authReview); // id=7
+    auto authReviewSaved = db.createTask(demoUser, authReview);
 
     // ── Dashboard subtasks ─────────────────────────────────────────
 
@@ -113,7 +115,7 @@ void seedIfEmpty(Database& db) {
     dashWireframe.category = "Design";
     dashWireframe.status = "done";
     dashWireframe.actual_minutes = 200;
-    auto dashWireframeSaved = db.createTask(dashWireframe); // id=8
+    auto dashWireframeSaved = db.createTask(demoUser, dashWireframe);
 
     Task dashCharts;
     dashCharts.title = "Implement chart components";
@@ -121,7 +123,7 @@ void seedIfEmpty(Database& db) {
     dashCharts.parent_id = dashSaved.id;
     dashCharts.estimated_minutes = 300;
     dashCharts.category = "Coding";
-    auto dashChartsSaved = db.createTask(dashCharts); // id=9
+    auto dashChartsSaved = db.createTask(demoUser, dashCharts);
 
     Task dashFilter;
     dashFilter.title = "Add date range filter";
@@ -129,7 +131,7 @@ void seedIfEmpty(Database& db) {
     dashFilter.parent_id = dashSaved.id;
     dashFilter.estimated_minutes = 90;
     dashFilter.category = "Coding";
-    auto dashFilterSaved = db.createTask(dashFilter); // id=10
+    auto dashFilterSaved = db.createTask(demoUser, dashFilter);
 
     // ── Infra subtasks ─────────────────────────────────────────────
 
@@ -139,7 +141,7 @@ void seedIfEmpty(Database& db) {
     infraAlerts.parent_id = infraSaved.id;
     infraAlerts.estimated_minutes = 120;
     infraAlerts.category = "Monitor";
-    auto infraAlertsSaved = db.createTask(infraAlerts); // id=11
+    auto infraAlertsSaved = db.createTask(demoUser, infraAlerts);
 
     Task infraGrafana;
     infraGrafana.title = "Configure Grafana dashboards";
@@ -147,7 +149,7 @@ void seedIfEmpty(Database& db) {
     infraGrafana.parent_id = infraSaved.id;
     infraGrafana.estimated_minutes = 90;
     infraGrafana.category = "Monitor";
-    auto infraGrafanaSaved = db.createTask(infraGrafana); // id=12
+    auto infraGrafanaSaved = db.createTask(demoUser, infraGrafana);
 
     // ── Standalone task ────────────────────────────────────────────
 
@@ -156,37 +158,34 @@ void seedIfEmpty(Database& db) {
     docs.priority = 4;
     docs.estimated_minutes = 60;
     docs.category = "Design";
-    auto docsSaved = db.createTask(docs); // id=13
+    auto docsSaved = db.createTask(demoUser, docs);
 
     // Recalculate parent estimates
     db.recalcEstimate(authSaved.id);
     db.recalcEstimate(dashSaved.id);
     db.recalcEstimate(infraSaved.id);
 
-    // ── Weekly plan (all incomplete leaf tasks) ────────────────────
+    // ── Weekly plan ────────────────────────────────────────────────
 
     Plan weekly;
     weekly.type = "weekly";
     weekly.date = monday;
-
-    // Include all leaf tasks (done ones too so the plan looks complete)
     weekly.items = {
-        {authDesignSaved.id, "", 120},  // done
-        {authImplSaved.id, "", 240},    // in_progress
+        {authDesignSaved.id, "", 120},
+        {authImplSaved.id, "", 240},
         {authTestSaved.id, "", 180},
         {authReviewSaved.id, "", 60},
-        {dashWireframeSaved.id, "", 180}, // done
+        {dashWireframeSaved.id, "", 180},
         {dashChartsSaved.id, "", 300},
         {dashFilterSaved.id, "", 90},
         {infraAlertsSaved.id, "", 120},
         {infraGrafanaSaved.id, "", 90},
         {docsSaved.id, "", 60},
     };
-    db.createPlan(weekly);
+    db.createPlan(demoUser, weekly);
 
     // ── Past daily plans (unreviewed) ──────────────────────────────
 
-    // Day before yesterday: auth design (done) + part of OAuth impl
     Plan dayBeforePlan;
     dayBeforePlan.type = "daily";
     dayBeforePlan.date = dayBefore;
@@ -195,9 +194,8 @@ void seedIfEmpty(Database& db) {
         {authImplSaved.id, "", 120},
         {dashWireframeSaved.id, "", 180},
     };
-    db.createPlan(dayBeforePlan);
+    db.createPlan(demoUser, dayBeforePlan);
 
-    // Yesterday: continue OAuth impl + start charts
     Plan yesterdayPlan;
     yesterdayPlan.type = "daily";
     yesterdayPlan.date = yesterday;
@@ -206,9 +204,8 @@ void seedIfEmpty(Database& db) {
         {dashChartsSaved.id, "", 150},
         {infraAlertsSaved.id, "", 120},
     };
-    db.createPlan(yesterdayPlan);
+    db.createPlan(demoUser, yesterdayPlan);
 
-    // Today: remaining work
     Plan todayPlan;
     todayPlan.type = "daily";
     todayPlan.date = today;
@@ -217,9 +214,9 @@ void seedIfEmpty(Database& db) {
         {dashChartsSaved.id, "", 150},
         {authReviewSaved.id, "", 60},
     };
-    db.createPlan(todayPlan);
+    db.createPlan(demoUser, todayPlan);
 
-    // ── Past week summary (history) ──────────────────────────────────
+    // ── Past week summary ──────────────────────────────────────────
 
     std::string lastMonday = dateOffset(-7);
     lastMonday = getMondayOfWeek(lastMonday);
@@ -250,5 +247,5 @@ void seedIfEmpty(Database& db) {
         {{"task_id", 0}, {"title", "Implement rate limiting"}, {"category", "Coding"}, {"status", "in_progress"}, {"planned_minutes", 120}, {"root_task_id", 100}, {"root_task_title", "User Portal"}},
         {{"task_id", 0}, {"title", "Configure uptime alerts"}, {"category", "Monitor"}, {"status", "todo"}, {"planned_minutes", 60}, {"root_task_id", 101}, {"root_task_title", "CI/CD Pipeline"}}
     };
-    db.createSummary(pastSummary);
+    db.createSummary(demoUser, pastSummary);
 }

@@ -112,6 +112,24 @@ inline void to_json(nlohmann::json& j, const WeeklySummary& s) {
     };
 }
 
+struct User {
+    int id = 0;
+    std::string provider;       // "microsoft"
+    std::string provider_id;    // oid from MS Graph
+    std::string email;
+    std::string name;
+    std::string avatar_url;
+    std::string created_at;
+};
+
+inline void to_json(nlohmann::json& j, const User& u) {
+    j = {
+        {"id", u.id}, {"provider", u.provider}, {"provider_id", u.provider_id},
+        {"email", u.email}, {"name", u.name}, {"avatar_url", u.avatar_url},
+        {"created_at", u.created_at}
+    };
+}
+
 struct ProductivityLog {
     int id = 0;
     int task_id = 0;

@@ -1,5 +1,6 @@
 #include <iostream>
 #include <fstream>
+#include <cstdlib>
 #include <httplib.h>
 #include "database.h"
 #include "routes.h"
@@ -12,14 +13,18 @@ int main(int argc, char* argv[]) {
     }
 
     Database db("autoplanner.db");
-    seedIfEmpty(db);
+    // Only seed demo data if AUTOPLANNER_SEED=1 is set
+    const char* seedEnv = std::getenv("AUTOPLANNER_SEED");
+    if (seedEnv && std::string(seedEnv) == "1") {
+        seedIfEmpty(db);
+    }
     httplib::Server server;
 
     // CORS middleware — allow requests from the Vite dev server
     server.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
         res.set_header("Access-Control-Allow-Origin", "*");
         res.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        res.set_header("Access-Control-Allow-Headers", "Content-Type");
+        res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
         if (req.method == "OPTIONS") {
             res.status = 204;

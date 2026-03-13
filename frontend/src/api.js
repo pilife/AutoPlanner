@@ -1,10 +1,21 @@
 const BASE = '/api';
 
 async function request(path, options = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
+  const token = localStorage.getItem('session_token');
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token && { Authorization: `Bearer ${token}` }),
+    ...options.headers,
+  };
+
+  const res = await fetch(`${BASE}${path}`, { ...options, headers });
+
+  if (res.status === 401) {
+    localStorage.removeItem('session_token');
+    window.location.reload();
+    return;
+  }
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || 'Request failed');

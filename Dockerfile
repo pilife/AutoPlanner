@@ -4,12 +4,14 @@ WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
+ARG VITE_MICROSOFT_CLIENT_ID=""
+ENV VITE_MICROSOFT_CLIENT_ID=$VITE_MICROSOFT_CLIENT_ID
 RUN npm run build
 
 # Stage 2: Build backend
 FROM ubuntu:24.04 AS backend-build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake git ca-certificates \
+    build-essential cmake git ca-certificates libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app/backend
 COPY backend/CMakeLists.txt ./
@@ -20,7 +22,7 @@ RUN cmake -B build -DCMAKE_BUILD_TYPE=Release \
 # Stage 3: Runtime
 FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+    ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

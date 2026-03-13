@@ -15,37 +15,48 @@ public:
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
 
+    // Users
+    User getOrCreateUser(const std::string& provider, const std::string& providerId,
+                         const std::string& email, const std::string& name,
+                         const std::string& avatarUrl);
+    std::optional<User> getUserById(int id);
+
+    // Sessions
+    std::string createSession(int userId);
+    std::optional<int> validateSession(const std::string& token);
+    void deleteSession(const std::string& token);
+
     // Tasks
-    Task createTask(const Task& task);
-    std::optional<Task> getTask(int id);
-    std::vector<Task> getAllTasks(const std::string& status = "",
+    Task createTask(int userId, const Task& task);
+    std::optional<Task> getTask(int userId, int id);
+    std::vector<Task> getAllTasks(int userId, const std::string& status = "",
                                   const std::string& category = "");
-    bool updateTask(int id, const Task& task);
-    bool deleteTask(int id);
+    bool updateTask(int userId, int id, const Task& task);
+    bool deleteTask(int userId, int id);
 
     // Recompute parent estimated_minutes as sum of children (recursive up)
     void recalcEstimate(int taskId);
 
     // Plans
-    Plan createPlan(const Plan& plan);
-    std::optional<Plan> getPlanByTypeAndDate(const std::string& type,
+    Plan createPlan(int userId, const Plan& plan);
+    std::optional<Plan> getPlanByTypeAndDate(int userId, const std::string& type,
                                              const std::string& date);
-    bool deletePlan(int id);
-    bool markPlanReviewed(int id);
-    std::vector<Plan> getUnreviewedDailyPlans(const std::string& beforeDate,
+    bool deletePlan(int userId, int id);
+    bool markPlanReviewed(int userId, int id);
+    std::vector<Plan> getUnreviewedDailyPlans(int userId, const std::string& beforeDate,
                                                const std::string& monday);
 
     // Weekly summaries
-    WeeklySummary createSummary(const WeeklySummary& summary);
-    std::optional<WeeklySummary> getSummary(const std::string& weekDate);
-    std::vector<WeeklySummary> getAllSummaries();
+    WeeklySummary createSummary(int userId, const WeeklySummary& summary);
+    std::optional<WeeklySummary> getSummary(int userId, const std::string& weekDate);
+    std::vector<WeeklySummary> getAllSummaries(int userId);
 
     // Productivity logs
-    ProductivityLog createLog(const ProductivityLog& log);
-    std::vector<ProductivityLog> getLogsByTaskId(int taskId);
+    ProductivityLog createLog(int userId, const ProductivityLog& log);
+    std::vector<ProductivityLog> getLogsByTaskId(int userId, int taskId);
 
     // Categories
-    std::vector<std::string> getCategories();
+    std::vector<std::string> getCategories(int userId);
 
 private:
     sqlite3* db_ = nullptr;

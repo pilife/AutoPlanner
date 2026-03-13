@@ -34,12 +34,16 @@ endif()
 add_library(sqlite3_lib STATIC ${SQLITE_DIR}/sqlite3.c)
 target_include_directories(sqlite3_lib PUBLIC ${SQLITE_DIR})
 
+find_package(OpenSSL REQUIRED)
+
 add_executable(autoplanner
     src/main.cpp
+    src/auth.cpp
     src/database.cpp
     src/routes.cpp
     src/seed.cpp
 )
 
+target_compile_definitions(autoplanner PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
 target_include_directories(autoplanner PRIVATE src)
-target_link_libraries(autoplanner PRIVATE httplib::httplib nlohmann_json::nlohmann_json sqlite3_lib pthread)
+target_link_libraries(autoplanner PRIVATE httplib::httplib nlohmann_json::nlohmann_json sqlite3_lib OpenSSL::SSL OpenSSL::Crypto pthread)

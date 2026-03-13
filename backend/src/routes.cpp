@@ -1,4 +1,5 @@
 #include "routes.h"
+#include "auth.h"
 #include <nlohmann/json.hpp>
 #include <ctime>
 #include <sstream>
@@ -73,26 +74,95 @@ static std::vector<std::string> getRemainingWeekDays(const std::string& monday,
 
 void registerRoutes(httplib::Server& server, Database& db) {
 
-    // ── Tasks ──────────────────────────────────────────────────────────
+    // ── Auth (unauthenticated) ────────────────────────────────────────
 
-    server.Get("/api/tasks", [&](const httplib::Request& req, httplib::Response& res) {
-        std::string status   = req.get_param_value("status");
-        std::string category = req.get_param_value("category");
-        auto tasks = db.getAllTasks(status, category);
-        jsonResponse(res, 200, tasks);
+    server.Post("/api/auth/login", [&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            std::string provider = body.value("provider", "");
+            std::string token = body.value("token", "");
+            std::string idToken = body.value("id_token", "");
+
+            if (provider.empty() || (token.empty() && idToken.empty())) {
+                errorResponse(res, 400, "provider and token are required");
+                return;
+            }
+
+            if (provider != "microsoft") {
+                errorResponse(res, 400, "Only 'microsoft' provider is supported");
+                return;
+            }
+
+            auto msUser = verifyMicrosoftToken(token, idToken);
+            if (!msUser) {
+                errorResponse(res, 401, "Invalid or expired token");
+                return;
+            }
+
+            auto user = db.getOrCreateUser("microsoft", msUser->id,
+                                            msUser->email, msUser->display_name, "");
+            auto sessionToken = db.createSession(user.id);
+
+            json result;
+            result["session_token"] = sessionToken;
+            result["user"] = user;
+            jsonResponse(res, 200, result);
+        } catch (const std::exception& e) {
+            errorResponse(res, 400, e.what());
+        }
     });
 
-    server.Get(R"(/api/tasks/(\d+))", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Post("/api/auth/logout", [&](const httplib::Request& req, httplib::Response& res) {
+        auto userId = getAuthenticatedUserId(db, req);
+        if (!userId) {
+            errorResponse(res, 401, "Unauthorized");
+            return;
+        }
+        // Extract token and delete session
+        auto it = req.headers.find("Authorization");
+        if (it != req.headers.end() && it->second.substr(0, 7) == "Bearer ") {
+            db.deleteSession(it->second.substr(7));
+        }
+        jsonResponse(res, 200, {{"logged_out", true}});
+    });
+
+    server.Get("/api/auth/me", [&](const httplib::Request& req, httplib::Response& res) {
+        auto userId = getAuthenticatedUserId(db, req);
+        if (!userId) {
+            errorResponse(res, 401, "Unauthorized");
+            return;
+        }
+        auto user = db.getUserById(*userId);
+        if (!user) {
+            errorResponse(res, 401, "User not found");
+            return;
+        }
+        jsonResponse(res, 200, *user);
+    });
+
+    // ── Tasks ──────────────────────────────────────────────────────────
+
+    server.Get("/api/tasks", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
+        std::string status   = req.get_param_value("status");
+        std::string category = req.get_param_value("category");
+        auto tasks = db.getAllTasks(userId, status, category);
+        jsonResponse(res, 200, tasks);
+    }));
+
+    server.Get(R"(/api/tasks/(\d+))", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         int id = std::stoi(req.matches[1]);
-        auto task = db.getTask(id);
+        auto task = db.getTask(userId, id);
         if (task) {
             jsonResponse(res, 200, *task);
         } else {
             errorResponse(res, 404, "Task not found");
         }
-    });
+    }));
 
-    server.Post("/api/tasks", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Post("/api/tasks", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         try {
             auto body = json::parse(req.body);
             Task t = body.get<Task>();
@@ -100,8 +170,7 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 errorResponse(res, 400, "Title is required");
                 return;
             }
-            auto created = db.createTask(t);
-            // Recompute parent's estimated_minutes from children
+            auto created = db.createTask(userId, t);
             if (created.parent_id > 0) {
                 db.recalcEstimate(created.parent_id);
             }
@@ -109,12 +178,13 @@ void registerRoutes(httplib::Server& server, Database& db) {
         } catch (const std::exception& e) {
             errorResponse(res, 400, e.what());
         }
-    });
+    }));
 
-    server.Put(R"(/api/tasks/(\d+))", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Put(R"(/api/tasks/(\d+))", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         try {
             int id = std::stoi(req.matches[1]);
-            auto existing = db.getTask(id);
+            auto existing = db.getTask(userId, id);
             if (!existing) {
                 errorResponse(res, 404, "Task not found");
                 return;
@@ -123,7 +193,6 @@ void registerRoutes(httplib::Server& server, Database& db) {
             Task t = *existing;
             int oldParentId = t.parent_id;
 
-            // Merge fields from body
             if (body.contains("parent_id"))         t.parent_id = body["parent_id"];
             if (body.contains("title"))             t.title = body["title"];
             if (body.contains("description"))       t.description = body["description"];
@@ -134,15 +203,13 @@ void registerRoutes(httplib::Server& server, Database& db) {
             if (body.contains("status"))            t.status = body["status"];
             if (body.contains("due_date"))          t.due_date = body["due_date"];
 
-            if (db.updateTask(id, t)) {
-                // Recompute estimates for old and new parents
+            if (db.updateTask(userId, id, t)) {
                 if (oldParentId > 0) db.recalcEstimate(oldParentId);
                 if (t.parent_id > 0 && t.parent_id != oldParentId)
                     db.recalcEstimate(t.parent_id);
-                // Also recompute self if it has children
                 db.recalcEstimate(id);
 
-                auto updated = db.getTask(id);
+                auto updated = db.getTask(userId, id);
                 jsonResponse(res, 200, *updated);
             } else {
                 errorResponse(res, 500, "Failed to update task");
@@ -150,37 +217,39 @@ void registerRoutes(httplib::Server& server, Database& db) {
         } catch (const std::exception& e) {
             errorResponse(res, 400, e.what());
         }
-    });
+    }));
 
-    server.Delete(R"(/api/tasks/(\d+))", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Delete(R"(/api/tasks/(\d+))", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         int id = std::stoi(req.matches[1]);
-        if (db.deleteTask(id)) {
+        if (db.deleteTask(userId, id)) {
             jsonResponse(res, 200, {{"deleted", true}});
         } else {
             errorResponse(res, 404, "Task not found");
         }
-    });
+    }));
 
     // ── Plans ──────────────────────────────────────────────────────────
 
-    server.Get("/api/plans", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Get("/api/plans", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         std::string type = req.get_param_value("type");
         std::string date = req.get_param_value("date");
         if (type.empty() || date.empty()) {
             errorResponse(res, 400, "Both 'type' and 'date' query params required");
             return;
         }
-        // For weekly, normalize date to Monday
         std::string lookupDate = (type == "weekly") ? getMondayOfWeek(date) : date;
-        auto plan = db.getPlanByTypeAndDate(type, lookupDate);
+        auto plan = db.getPlanByTypeAndDate(userId, type, lookupDate);
         if (plan) {
             jsonResponse(res, 200, *plan);
         } else {
             jsonResponse(res, 200, json::object());
         }
-    });
+    }));
 
-    server.Post("/api/plans", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Post("/api/plans", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         try {
             auto body = json::parse(req.body);
             Plan p = body.get<Plan>();
@@ -188,17 +257,16 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 errorResponse(res, 400, "type and date are required");
                 return;
             }
-            // Normalize weekly date to Monday
             if (p.type == "weekly") p.date = getMondayOfWeek(p.date);
-            auto created = db.createPlan(p);
+            auto created = db.createPlan(userId, p);
             jsonResponse(res, 201, created);
         } catch (const std::exception& e) {
             errorResponse(res, 400, e.what());
         }
-    });
+    }));
 
-    // Generate weekly plan: collect all incomplete leaf tasks sorted by priority
-    server.Post("/api/plans/generate-weekly", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Post("/api/plans/generate-weekly", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         try {
             auto body = json::parse(req.body);
             std::string date = body.value("date", "");
@@ -208,12 +276,9 @@ void registerRoutes(httplib::Server& server, Database& db) {
             }
             std::string monday = getMondayOfWeek(date);
 
-            // Get all tasks (including done ones for the weekly record)
-            auto allTasks = db.getAllTasks("", "");
-            // Filter to leaf tasks (no children)
+            auto allTasks = db.getAllTasks(userId, "", "");
             std::vector<Task> leafTasks;
             for (const auto& t : allTasks) {
-                // Check if this task has children
                 bool hasChildren = false;
                 for (const auto& other : allTasks) {
                     if (other.parent_id == t.id) {
@@ -224,7 +289,6 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 if (!hasChildren) leafTasks.push_back(t);
             }
 
-            // Sort by priority (ascending = most important first)
             std::sort(leafTasks.begin(), leafTasks.end(),
                 [](const Task& a, const Task& b) { return a.priority < b.priority; });
 
@@ -232,7 +296,7 @@ void registerRoutes(httplib::Server& server, Database& db) {
             for (const auto& t : leafTasks) {
                 PlanItem item;
                 item.task_id = t.id;
-                item.scheduled_time = ""; // weekly items don't have specific times
+                item.scheduled_time = "";
                 item.duration_minutes = t.estimated_minutes;
                 items.push_back(item);
             }
@@ -241,7 +305,7 @@ void registerRoutes(httplib::Server& server, Database& db) {
             plan.type = "weekly";
             plan.date = monday;
             plan.items = items;
-            auto saved = db.createPlan(plan);
+            auto saved = db.createPlan(userId, plan);
 
             json result = saved;
             result["generated"] = true;
@@ -249,12 +313,10 @@ void registerRoutes(httplib::Server& server, Database& db) {
         } catch (const std::exception& e) {
             errorResponse(res, 400, e.what());
         }
-    });
+    }));
 
-    // Generate daily plans from weekly plan: distributes incomplete tasks
-    // across remaining weekdays (from max(monday, today) through Friday).
-    // Returns plans + warning if overloaded.
-    server.Post("/api/plans/generate-daily", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Post("/api/plans/generate-daily", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         try {
             auto body = json::parse(req.body);
             std::string date = body.value("date", "");
@@ -266,17 +328,15 @@ void registerRoutes(httplib::Server& server, Database& db) {
             std::string today = todayStr();
             std::string startDate = (today > monday) ? today : monday;
 
-            // Load the weekly plan
-            auto weeklyPlan = db.getPlanByTypeAndDate("weekly", monday);
+            auto weeklyPlan = db.getPlanByTypeAndDate(userId, "weekly", monday);
             if (!weeklyPlan || weeklyPlan->items.empty()) {
                 errorResponse(res, 400, "No weekly plan found. Generate a weekly plan first.");
                 return;
             }
 
-            // Filter out completed tasks
             std::vector<PlanItem> incompleteItems;
             for (const auto& item : weeklyPlan->items) {
-                auto task = db.getTask(item.task_id);
+                auto task = db.getTask(userId, item.task_id);
                 if (task && task->status != "done") {
                     incompleteItems.push_back(item);
                 }
@@ -289,24 +349,22 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 return;
             }
 
-            int dailyCapacity = 480; // 8 hours per day
+            int dailyCapacity = 480;
             int totalRemaining = 0;
             for (const auto& item : incompleteItems)
                 totalRemaining += item.duration_minutes;
             int totalCapacity = numDays * dailyCapacity;
 
-            // Distribute across remaining days
             std::vector<std::vector<PlanItem>> dailyItems(numDays);
             std::vector<int> dayMinutes(numDays, 0);
             int currentDay = 0;
 
             for (const auto& item : incompleteItems) {
-                int startDay = currentDay;
                 while (currentDay < numDays &&
                        dayMinutes[currentDay] + item.duration_minutes > dailyCapacity) {
                     currentDay++;
                 }
-                if (currentDay >= numDays) currentDay = numDays - 1; // overflow to last day
+                if (currentDay >= numDays) currentDay = numDays - 1;
 
                 PlanItem scheduled;
                 scheduled.task_id = item.task_id;
@@ -321,18 +379,16 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 }
             }
 
-            // Save daily plans (only for remaining days)
             json plans = json::array();
             for (int i = 0; i < numDays; i++) {
                 Plan daily;
                 daily.type = "daily";
                 daily.date = remainingDays[i];
                 daily.items = dailyItems[i];
-                auto saved = db.createPlan(daily);
+                auto saved = db.createPlan(userId, daily);
                 plans.push_back(saved);
             }
 
-            // Build response with warning info
             json result;
             result["plans"] = plans;
             result["remaining_minutes"] = totalRemaining;
@@ -354,47 +410,40 @@ void registerRoutes(httplib::Server& server, Database& db) {
         } catch (const std::exception& e) {
             errorResponse(res, 400, e.what());
         }
-    });
+    }));
 
-    // Get unreviewed daily plans before a given date (within same week)
-    server.Get("/api/plans/unreviewed", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Get("/api/plans/unreviewed", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         std::string before = req.get_param_value("before");
         if (before.empty()) before = todayStr();
         std::string monday = getMondayOfWeek(before);
-        auto plans = db.getUnreviewedDailyPlans(before, monday);
+        auto plans = db.getUnreviewedDailyPlans(userId, before, monday);
         jsonResponse(res, 200, plans);
-    });
+    }));
 
-    // Review a daily plan: update task statuses and actual times,
-    // mark plan reviewed, then regenerate remaining daily plans.
-    server.Post("/api/plans/review", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Post("/api/plans/review", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         try {
             auto body = json::parse(req.body);
             int planId = body.at("plan_id").get<int>();
             auto taskReviews = body.at("tasks");
 
-            // Update each task
             for (const auto& tr : taskReviews) {
                 int taskId = tr.at("task_id").get<int>();
                 std::string status = tr.at("status").get<std::string>();
                 int actualMinutes = tr.value("actual_minutes", 0);
 
-                auto task = db.getTask(taskId);
+                auto task = db.getTask(userId, taskId);
                 if (task) {
                     Task t = *task;
                     t.status = status;
                     t.actual_minutes = actualMinutes;
-                    db.updateTask(taskId, t);
+                    db.updateTask(userId, taskId, t);
                 }
             }
 
-            // Mark plan as reviewed
-            db.markPlanReviewed(planId);
+            db.markPlanReviewed(userId, planId);
 
-            // Get the plan's date to determine week
-            auto plan = db.getPlanByTypeAndDate("daily",
-                body.value("plan_date", todayStr()));
-            // Also try to get plan by id if plan_date not provided
             std::string monday;
             if (body.contains("plan_date")) {
                 monday = getMondayOfWeek(body["plan_date"].get<std::string>());
@@ -402,19 +451,17 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 monday = getMondayOfWeek(todayStr());
             }
 
-            // Regenerate remaining daily plans from weekly
             std::string today = todayStr();
             std::string startDate = (today > monday) ? today : monday;
-            auto weeklyPlan = db.getPlanByTypeAndDate("weekly", monday);
+            auto weeklyPlan = db.getPlanByTypeAndDate(userId, "weekly", monday);
 
             json result;
             result["reviewed"] = true;
 
             if (weeklyPlan && !weeklyPlan->items.empty()) {
-                // Filter incomplete tasks from weekly plan
                 std::vector<PlanItem> incompleteItems;
                 for (const auto& item : weeklyPlan->items) {
-                    auto task = db.getTask(item.task_id);
+                    auto task = db.getTask(userId, item.task_id);
                     if (task && task->status != "done") {
                         incompleteItems.push_back(item);
                     }
@@ -459,7 +506,7 @@ void registerRoutes(httplib::Server& server, Database& db) {
                         daily.type = "daily";
                         daily.date = remainingDays[i];
                         daily.items = dailyItems[i];
-                        auto saved = db.createPlan(daily);
+                        auto saved = db.createPlan(userId, daily);
                         plans.push_back(saved);
                     }
                     result["plans"] = plans;
@@ -483,12 +530,12 @@ void registerRoutes(httplib::Server& server, Database& db) {
         } catch (const std::exception& e) {
             errorResponse(res, 400, e.what());
         }
-    });
+    }));
 
     // ── Weekly Summary ──────────────────────────────────────────────────
 
-    // Generate summary for a week from plan and task data
-    server.Post("/api/summaries/generate", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Post("/api/summaries/generate", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         try {
             auto body = json::parse(req.body);
             std::string date = body.value("date", "");
@@ -498,7 +545,7 @@ void registerRoutes(httplib::Server& server, Database& db) {
             }
             std::string monday = getMondayOfWeek(date);
 
-            auto weeklyPlan = db.getPlanByTypeAndDate("weekly", monday);
+            auto weeklyPlan = db.getPlanByTypeAndDate(userId, "weekly", monday);
             if (!weeklyPlan || weeklyPlan->items.empty()) {
                 errorResponse(res, 400, "No weekly plan found for this week.");
                 return;
@@ -510,18 +557,17 @@ void registerRoutes(httplib::Server& server, Database& db) {
             std::map<std::string, int> catCompleted;
             std::map<std::string, int> catPlanned;
 
-            // Helper to find root task
             auto findRoot = [&](int taskId) -> std::pair<int, std::string> {
-                auto t = db.getTask(taskId);
+                auto t = db.getTask(userId, taskId);
                 while (t && t->parent_id > 0) {
-                    t = db.getTask(t->parent_id);
+                    t = db.getTask(userId, t->parent_id);
                 }
                 return t ? std::make_pair(t->id, t->title)
                          : std::make_pair(taskId, std::string("Task #") + std::to_string(taskId));
             };
 
             for (const auto& item : weeklyPlan->items) {
-                auto task = db.getTask(item.task_id);
+                auto task = db.getTask(userId, item.task_id);
                 if (!task) continue;
 
                 auto [rootId, rootTitle] = findRoot(item.task_id);
@@ -562,7 +608,6 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 }
             }
 
-            // Category breakdown
             for (const auto& [cat, planned] : catPlanned) {
                 int completed = catCompleted.count(cat) ? catCompleted[cat] : 0;
                 summary.category_breakdown[cat] = {
@@ -571,53 +616,56 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 };
             }
 
-            auto saved = db.createSummary(summary);
+            auto saved = db.createSummary(userId, summary);
             jsonResponse(res, 201, saved);
         } catch (const std::exception& e) {
             errorResponse(res, 400, e.what());
         }
-    });
+    }));
 
-    // Get summary for a specific week
-    server.Get("/api/summaries", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Get("/api/summaries", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         std::string date = req.get_param_value("date");
         if (!date.empty()) {
             std::string monday = getMondayOfWeek(date);
-            auto summary = db.getSummary(monday);
+            auto summary = db.getSummary(userId, monday);
             if (summary) {
                 jsonResponse(res, 200, *summary);
             } else {
                 jsonResponse(res, 200, json::object());
             }
         } else {
-            auto all = db.getAllSummaries();
+            auto all = db.getAllSummaries(userId);
             jsonResponse(res, 200, all);
         }
-    });
+    }));
 
     // ── Productivity Logs ──────────────────────────────────────────────
 
-    server.Post("/api/productivity", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Post("/api/productivity", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         try {
             auto body = json::parse(req.body);
             ProductivityLog log = body.get<ProductivityLog>();
-            auto created = db.createLog(log);
+            auto created = db.createLog(userId, log);
             jsonResponse(res, 201, created);
         } catch (const std::exception& e) {
             errorResponse(res, 400, e.what());
         }
-    });
+    }));
 
-    server.Get(R"(/api/productivity/(\d+))", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Get(R"(/api/productivity/(\d+))", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
         int taskId = std::stoi(req.matches[1]);
-        auto logs = db.getLogsByTaskId(taskId);
+        auto logs = db.getLogsByTaskId(userId, taskId);
         jsonResponse(res, 200, logs);
-    });
+    }));
 
     // ── Categories ─────────────────────────────────────────────────────
 
-    server.Get("/api/categories", [&](const httplib::Request& req, httplib::Response& res) {
-        auto cats = db.getCategories();
+    server.Get("/api/categories", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
+        auto cats = db.getCategories(userId);
         jsonResponse(res, 200, cats);
-    });
+    }));
 }
