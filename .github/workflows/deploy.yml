@@ -37,9 +37,5 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ env.AZURE_WEBAPP_NAME }}
-          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest
+      # Azure Web App is configured with continuous deployment
+      # and will auto-pull the new ghcr.io image when updated
