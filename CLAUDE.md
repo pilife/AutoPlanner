@@ -56,7 +56,7 @@ The backend supports two database backends, selected at runtime:
 - **SQLite** (default): used when `AZURE_SQL_CONNECTION_STRING` is not set. File-based, great for local dev.
 - **Azure SQL**: used when `AZURE_SQL_CONNECTION_STRING` env var is set. Requires ODBC Driver 18. Built with `-DUSE_AZURE_SQL=ON` (CMake) or `-DHAS_AZURE_SQL` (Bazel copts on Linux).
 
-Connection string format: `Driver={ODBC Driver 18 for SQL Server};Server=tcp:<server>.database.windows.net,1433;Database=autoplanner;Uid=<user>;Pwd=<pass>;Encrypt=yes;`
+Connection string (Entra Managed Identity, no password): `Driver={ODBC Driver 18 for SQL Server};Server=tcp:autoplanner.database.windows.net,1433;Database=autoplanner;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;Authentication=ActiveDirectoryMsi`
 
 ### Frontend (React)
 ```bash
@@ -74,8 +74,13 @@ Requires `frontend/.env.local` with `VITE_MICROSOFT_CLIENT_ID=<client-id>`.
 - **CI/CD**: GitHub Actions (`.github/workflows/deploy.yml`) builds Docker image on push to `main`, pushes to GHCR, triggers Azure webhook to pull new image
 - **GitHub repo**: `pilife/AutoPlanner`
 - **GitHub Actions secrets** (in `pilife/AutoPlanner`):
-  - `VITE_MICROSOFT_CLIENT_ID` — baked into Docker image at build time
+  - `VITE_MICROSOFT_CLIENT_ID` — baked into Docker image at build time (frontend OAuth client ID)
+  - `AZURE_SQL_CONNECTION_STRING` — baked into Docker image at build time (database connection)
   - `AZURE_WEBAPP_WEBHOOK_URL` — triggers Azure to pull new image after push
+- **Azure App Service config**:
+  - System-assigned Managed Identity enabled (for Entra auth to Azure SQL)
+  - Database user `[autoplanner-pilife]` created from external provider with `db_owner` role
+  - Entra admin: `frankzhang5513@gmail.com`
 
 ## API Endpoints
 
