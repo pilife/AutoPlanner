@@ -8,12 +8,15 @@ AutoPlanner is a productivity planner for knowledge workers. It manages tasks an
 
 ## Architecture
 
-- **Backend** (`backend/`): C++17 REST API using cpp-httplib, nlohmann/json, SQLite3, and OpenSSL (Linux). Built with Bazel (dev) and CMake (Docker).
+- **Backend** (`backend/`): C++17 REST API using cpp-httplib, nlohmann/json, SQLite3/Azure SQL, and OpenSSL (Linux). Built with Bazel (dev) and CMake (Docker).
   - `WORKSPACE` / `BUILD` — Bazel build config
-  - `CMakeLists.txt` — CMake build config (used in Docker)
+  - `CMakeLists.txt` — CMake build config (used in Docker, `-DUSE_AZURE_SQL=ON` for ODBC)
+  - `src/db_backend.h` — Abstract database interface (Param, Row, DbBackend)
+  - `src/sqlite_backend.h/.cpp` — SQLite implementation of DbBackend
+  - `src/azuresql_backend.h/.cpp` — Azure SQL ODBC implementation (compiled with `HAS_AZURE_SQL`)
+  - `src/database.h/.cpp` — High-level Database class using DbBackend; switches SQLite/Azure SQL via `AZURE_SQL_CONNECTION_STRING` env var
   - `src/models.h` — Data structures (User, Task, Plan, PlanItem, WeeklySummary, ProductivityLog) with JSON serialization
   - `src/auth.h/.cpp` — Microsoft token verification (MS Graph with SSL, JWT decode fallback), session management, `requireAuth` wrapper
-  - `src/database.h/.cpp` — SQLite wrapper with typed CRUD methods; all queries scoped by `user_id`
   - `src/routes.h/.cpp` — HTTP route handlers (all under `/api/`); all data routes wrapped with `requireAuth`
   - `src/main.cpp` — Server entry point (default port 8080)
   - `src/seed.h/.cpp` — Demo data (only runs if `AUTOPLANNER_SEED=1` env var is set)
@@ -48,6 +51,13 @@ bazel run //:autoplanner        # Runs the server on port 8080
 ```
 On Linux with OpenSSL: enables MS Graph token verification. On Windows without OpenSSL: falls back to JWT decode.
 
+### Database Backend
+The backend supports two database backends, selected at runtime:
+- **SQLite** (default): used when `AZURE_SQL_CONNECTION_STRING` is not set. File-based, great for local dev.
+- **Azure SQL**: used when `AZURE_SQL_CONNECTION_STRING` env var is set. Requires ODBC Driver 18. Built with `-DUSE_AZURE_SQL=ON` (CMake) or `-DHAS_AZURE_SQL` (Bazel copts on Linux).
+
+Connection string format: `Driver={ODBC Driver 18 for SQL Server};Server=tcp:<server>.database.windows.net,1433;Database=autoplanner;Uid=<user>;Pwd=<pass>;Encrypt=yes;`
+
 ### Frontend (React)
 ```bash
 cd frontend
@@ -62,7 +72,7 @@ Requires `frontend/.env.local` with `VITE_MICROSOFT_CLIENT_ID=<client-id>`.
 - **Hosting**: Azure Web App for Containers (`autoplanner-pilife.azurewebsites.net`)
 - **Container image**: `ghcr.io/pilife/autoplanner:latest`
 - **CI/CD**: GitHub Actions (`.github/workflows/deploy.yml`) builds Docker image on push to `main`, pushes to GHCR, triggers Azure webhook to pull new image
-- **GitHub repo**: `pilife/AutoPlanner` (deployed), `yizhang8_microsoft/AutoPlanner` (mirror)
+- **GitHub repo**: `pilife/AutoPlanner`
 - **GitHub Actions secrets** (in `pilife/AutoPlanner`):
   - `VITE_MICROSOFT_CLIENT_ID` — baked into Docker image at build time
   - `AZURE_WEBAPP_WEBHOOK_URL` — triggers Azure to pull new image after push

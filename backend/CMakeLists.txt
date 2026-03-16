@@ -4,6 +4,8 @@ project(AutoPlanner VERSION 0.1.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(USE_AZURE_SQL "Enable Azure SQL backend via ODBC" OFF)
+
 include(FetchContent)
 
 FetchContent_Declare(httplib
@@ -42,8 +44,16 @@ add_executable(autoplanner
     src/database.cpp
     src/routes.cpp
     src/seed.cpp
+    src/sqlite_backend.cpp
+    src/azuresql_backend.cpp
 )
 
 target_compile_definitions(autoplanner PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
 target_include_directories(autoplanner PRIVATE src)
 target_link_libraries(autoplanner PRIVATE httplib::httplib nlohmann_json::nlohmann_json sqlite3_lib OpenSSL::SSL OpenSSL::Crypto pthread)
+
+if(USE_AZURE_SQL)
+    find_library(ODBC_LIBRARY NAMES odbc32 odbc)
+    target_compile_definitions(autoplanner PRIVATE HAS_AZURE_SQL)
+    target_link_libraries(autoplanner PRIVATE ${ODBC_LIBRARY})
+endif()

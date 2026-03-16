@@ -1,126 +1,202 @@
 #include "database.h"
 #include "auth.h"
+#include "sqlite_backend.h"
+#ifdef HAS_AZURE_SQL
+#include "azuresql_backend.h"
+#endif
 #include <stdexcept>
 #include <ctime>
+#include <cstring>
 #include <sstream>
 #include <iomanip>
+#include <nlohmann/json.hpp>
 
-Database::Database(const std::string& path) {
-    if (sqlite3_open(path.c_str(), &db_) != SQLITE_OK) {
-        throw std::runtime_error("Failed to open database: " +
-                                 std::string(sqlite3_errmsg(db_)));
+Database::Database(const std::string& sqlitePath) {
+    const char* connStr = std::getenv("AZURE_SQL_CONNECTION_STRING");
+#ifdef HAS_AZURE_SQL
+    if (connStr && std::strlen(connStr) > 0) {
+        backend_ = std::make_unique<AzureSqlBackend>(connStr);
+        useAzureSql_ = true;
+    } else
+#endif
+    {
+        (void)connStr;
+        backend_ = std::make_unique<SqliteBackend>(sqlitePath);
     }
-    exec("PRAGMA journal_mode=WAL;");
-    exec("PRAGMA foreign_keys=ON;");
     initTables();
 }
 
-Database::~Database() {
-    if (db_) sqlite3_close(db_);
-}
+Database::~Database() = default;
 
 void Database::initTables() {
-    exec(R"(
-        CREATE TABLE IF NOT EXISTS users (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            provider    TEXT NOT NULL,
-            provider_id TEXT NOT NULL,
-            email       TEXT NOT NULL,
-            name        TEXT DEFAULT '',
-            avatar_url  TEXT DEFAULT '',
-            created_at  TEXT NOT NULL,
-            UNIQUE(provider, provider_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS sessions (
-            token      TEXT PRIMARY KEY,
-            user_id    INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS tasks (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id         INTEGER NOT NULL DEFAULT 0,
-            parent_id       INTEGER DEFAULT 0,
-            title           TEXT NOT NULL,
-            description     TEXT DEFAULT '',
-            priority        INTEGER DEFAULT 3,
-            estimated_minutes INTEGER DEFAULT 30,
-            actual_minutes  INTEGER DEFAULT 0,
-            category        TEXT DEFAULT '',
-            status          TEXT DEFAULT 'todo',
-            due_date        TEXT DEFAULT '',
-            created_at      TEXT NOT NULL,
-            updated_at      TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS plans (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL DEFAULT 0,
-            type       TEXT NOT NULL,
-            date       TEXT NOT NULL,
-            items_json TEXT DEFAULT '[]',
-            reviewed   INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL,
-            UNIQUE(user_id, type, date)
-        );
-
-        CREATE TABLE IF NOT EXISTS weekly_summaries (
-            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id            INTEGER NOT NULL DEFAULT 0,
-            week_date          TEXT NOT NULL,
-            total_planned      INTEGER DEFAULT 0,
-            total_completed    INTEGER DEFAULT 0,
-            total_actual       INTEGER DEFAULT 0,
-            tasks_planned      INTEGER DEFAULT 0,
-            tasks_completed    INTEGER DEFAULT 0,
-            tasks_carried_over INTEGER DEFAULT 0,
-            category_breakdown TEXT DEFAULT '{}',
-            completed_tasks    TEXT DEFAULT '[]',
-            incomplete_tasks   TEXT DEFAULT '[]',
-            created_at         TEXT NOT NULL,
-            UNIQUE(user_id, week_date)
-        );
-
-        CREATE TABLE IF NOT EXISTS productivity_logs (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL DEFAULT 0,
-            task_id    INTEGER NOT NULL,
-            start_time TEXT NOT NULL,
-            end_time   TEXT DEFAULT '',
-            notes      TEXT DEFAULT '',
-            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
-        CREATE INDEX IF NOT EXISTS idx_plans_user ON plans(user_id);
-        CREATE INDEX IF NOT EXISTS idx_summaries_user ON weekly_summaries(user_id);
-        CREATE INDEX IF NOT EXISTS idx_logs_user ON productivity_logs(user_id);
-    )");
-}
-
-void Database::exec(const std::string& sql) {
-    char* err = nullptr;
-    if (sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err) != SQLITE_OK) {
-        std::string msg = err ? err : "unknown error";
-        sqlite3_free(err);
-        throw std::runtime_error("SQL error: " + msg);
+    if (useAzureSql_) {
+        // T-SQL schema with IDENTITY, NVARCHAR, BIT
+        backend_->exec(R"(
+            IF OBJECT_ID('dbo.users', 'U') IS NULL
+            CREATE TABLE dbo.users (
+                id          INT IDENTITY(1,1) PRIMARY KEY,
+                provider    NVARCHAR(50)  NOT NULL,
+                provider_id NVARCHAR(255) NOT NULL,
+                email       NVARCHAR(320) NOT NULL,
+                name        NVARCHAR(255) DEFAULT '',
+                avatar_url  NVARCHAR(2048) DEFAULT '',
+                created_at  NVARCHAR(30)  NOT NULL,
+                CONSTRAINT UQ_users_provider UNIQUE(provider, provider_id)
+            )
+        )");
+        backend_->exec(R"(
+            IF OBJECT_ID('dbo.sessions', 'U') IS NULL
+            CREATE TABLE dbo.sessions (
+                token      NVARCHAR(64) PRIMARY KEY,
+                user_id    INT NOT NULL,
+                created_at NVARCHAR(30) NOT NULL,
+                expires_at NVARCHAR(30) NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES dbo.users(id) ON DELETE CASCADE
+            )
+        )");
+        backend_->exec(R"(
+            IF OBJECT_ID('dbo.tasks', 'U') IS NULL
+            CREATE TABLE dbo.tasks (
+                id                INT IDENTITY(1,1) PRIMARY KEY,
+                user_id           INT NOT NULL DEFAULT 0,
+                parent_id         INT DEFAULT 0,
+                title             NVARCHAR(500) NOT NULL,
+                description       NVARCHAR(MAX) DEFAULT '',
+                priority          INT DEFAULT 3,
+                estimated_minutes INT DEFAULT 30,
+                actual_minutes    INT DEFAULT 0,
+                category          NVARCHAR(100) DEFAULT '',
+                status            NVARCHAR(20)  DEFAULT 'todo',
+                due_date          NVARCHAR(10)  DEFAULT '',
+                created_at        NVARCHAR(30) NOT NULL,
+                updated_at        NVARCHAR(30) NOT NULL
+            )
+        )");
+        backend_->exec(R"(
+            IF OBJECT_ID('dbo.plans', 'U') IS NULL
+            CREATE TABLE dbo.plans (
+                id         INT IDENTITY(1,1) PRIMARY KEY,
+                user_id    INT NOT NULL DEFAULT 0,
+                type       NVARCHAR(20) NOT NULL,
+                date       NVARCHAR(10) NOT NULL,
+                items_json NVARCHAR(MAX) DEFAULT '[]',
+                reviewed   BIT DEFAULT 0,
+                created_at NVARCHAR(30) NOT NULL,
+                CONSTRAINT UQ_plans_user_type_date UNIQUE(user_id, type, date)
+            )
+        )");
+        backend_->exec(R"(
+            IF OBJECT_ID('dbo.weekly_summaries', 'U') IS NULL
+            CREATE TABLE dbo.weekly_summaries (
+                id                 INT IDENTITY(1,1) PRIMARY KEY,
+                user_id            INT NOT NULL DEFAULT 0,
+                week_date          NVARCHAR(10) NOT NULL,
+                total_planned      INT DEFAULT 0,
+                total_completed    INT DEFAULT 0,
+                total_actual       INT DEFAULT 0,
+                tasks_planned      INT DEFAULT 0,
+                tasks_completed    INT DEFAULT 0,
+                tasks_carried_over INT DEFAULT 0,
+                category_breakdown NVARCHAR(MAX) DEFAULT '{}',
+                completed_tasks    NVARCHAR(MAX) DEFAULT '[]',
+                incomplete_tasks   NVARCHAR(MAX) DEFAULT '[]',
+                created_at         NVARCHAR(30) NOT NULL,
+                CONSTRAINT UQ_summaries_user_week UNIQUE(user_id, week_date)
+            )
+        )");
+        backend_->exec(R"(
+            IF OBJECT_ID('dbo.productivity_logs', 'U') IS NULL
+            CREATE TABLE dbo.productivity_logs (
+                id         INT IDENTITY(1,1) PRIMARY KEY,
+                user_id    INT NOT NULL DEFAULT 0,
+                task_id    INT NOT NULL,
+                start_time NVARCHAR(30) NOT NULL,
+                end_time   NVARCHAR(30) DEFAULT '',
+                notes      NVARCHAR(MAX) DEFAULT '',
+                FOREIGN KEY (task_id) REFERENCES dbo.tasks(id) ON DELETE CASCADE
+            )
+        )");
+        // Indexes
+        backend_->exec("IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_tasks_user') CREATE INDEX idx_tasks_user ON dbo.tasks(user_id)");
+        backend_->exec("IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_plans_user') CREATE INDEX idx_plans_user ON dbo.plans(user_id)");
+        backend_->exec("IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_summaries_user') CREATE INDEX idx_summaries_user ON dbo.weekly_summaries(user_id)");
+        backend_->exec("IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_logs_user') CREATE INDEX idx_logs_user ON dbo.productivity_logs(user_id)");
+    } else {
+        // SQLite schema
+        backend_->exec(R"(
+            CREATE TABLE IF NOT EXISTS users (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider    TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                email       TEXT NOT NULL,
+                name        TEXT DEFAULT '',
+                avatar_url  TEXT DEFAULT '',
+                created_at  TEXT NOT NULL,
+                UNIQUE(provider, provider_id)
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+                token      TEXT PRIMARY KEY,
+                user_id    INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS tasks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         INTEGER NOT NULL DEFAULT 0,
+                parent_id       INTEGER DEFAULT 0,
+                title           TEXT NOT NULL,
+                description     TEXT DEFAULT '',
+                priority        INTEGER DEFAULT 3,
+                estimated_minutes INTEGER DEFAULT 30,
+                actual_minutes  INTEGER DEFAULT 0,
+                category        TEXT DEFAULT '',
+                status          TEXT DEFAULT 'todo',
+                due_date        TEXT DEFAULT '',
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS plans (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL DEFAULT 0,
+                type       TEXT NOT NULL,
+                date       TEXT NOT NULL,
+                items_json TEXT DEFAULT '[]',
+                reviewed   INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(user_id, type, date)
+            );
+            CREATE TABLE IF NOT EXISTS weekly_summaries (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id            INTEGER NOT NULL DEFAULT 0,
+                week_date          TEXT NOT NULL,
+                total_planned      INTEGER DEFAULT 0,
+                total_completed    INTEGER DEFAULT 0,
+                total_actual       INTEGER DEFAULT 0,
+                tasks_planned      INTEGER DEFAULT 0,
+                tasks_completed    INTEGER DEFAULT 0,
+                tasks_carried_over INTEGER DEFAULT 0,
+                category_breakdown TEXT DEFAULT '{}',
+                completed_tasks    TEXT DEFAULT '[]',
+                incomplete_tasks   TEXT DEFAULT '[]',
+                created_at         TEXT NOT NULL,
+                UNIQUE(user_id, week_date)
+            );
+            CREATE TABLE IF NOT EXISTS productivity_logs (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL DEFAULT 0,
+                task_id    INTEGER NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time   TEXT DEFAULT '',
+                notes      TEXT DEFAULT '',
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
+            CREATE INDEX IF NOT EXISTS idx_plans_user ON plans(user_id);
+            CREATE INDEX IF NOT EXISTS idx_summaries_user ON weekly_summaries(user_id);
+            CREATE INDEX IF NOT EXISTS idx_logs_user ON productivity_logs(user_id);
+        )");
     }
-}
-
-void Database::query(const std::string& sql,
-                     const std::function<void(sqlite3_stmt*)>& rowCallback) {
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-        throw std::runtime_error("SQL prepare error: " +
-                                 std::string(sqlite3_errmsg(db_)));
-    }
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        rowCallback(stmt);
-    }
-    sqlite3_finalize(stmt);
 }
 
 std::string Database::now() {
@@ -136,72 +212,99 @@ std::string Database::now() {
     return oss.str();
 }
 
+// ── SQL helpers for INSERT with OUTPUT (Azure SQL) vs plain INSERT (SQLite) ──
+
+std::string Database::insertUserSql() const {
+    if (useAzureSql_)
+        return "INSERT INTO users (provider, provider_id, email, name, avatar_url, created_at) "
+               "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?)";
+    return "INSERT INTO users (provider, provider_id, email, name, avatar_url, created_at) "
+           "VALUES (?, ?, ?, ?, ?, ?)";
+}
+
+std::string Database::insertSessionSql() const {
+    return "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)";
+}
+
+std::string Database::insertTaskSql() const {
+    if (useAzureSql_)
+        return "INSERT INTO tasks (user_id, parent_id, title, description, priority, "
+               "estimated_minutes, actual_minutes, category, status, due_date, created_at, updated_at) "
+               "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    return "INSERT INTO tasks (user_id, parent_id, title, description, priority, "
+           "estimated_minutes, actual_minutes, category, status, due_date, created_at, updated_at) "
+           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+}
+
+std::string Database::insertLogSql() const {
+    if (useAzureSql_)
+        return "INSERT INTO productivity_logs (user_id, task_id, start_time, end_time, notes) "
+               "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?)";
+    return "INSERT INTO productivity_logs (user_id, task_id, start_time, end_time, notes) "
+           "VALUES (?, ?, ?, ?, ?)";
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────
+
+static Task rowToTask(const Row& r) {
+    Task t;
+    t.id                = r.getInt(0);
+    t.parent_id         = r.getInt(1);
+    t.title             = r.getText(2);
+    t.description       = r.getText(3);
+    t.priority          = r.getInt(4);
+    t.estimated_minutes = r.getInt(5);
+    t.actual_minutes    = r.getInt(6);
+    t.category          = r.getText(7);
+    t.status            = r.getText(8);
+    t.due_date          = r.getText(9);
+    t.created_at        = r.getText(10);
+    t.updated_at        = r.getText(11);
+    return t;
+}
+
+static const char* TASK_COLS =
+    "id, parent_id, title, description, priority, estimated_minutes, "
+    "actual_minutes, category, status, due_date, created_at, updated_at";
+
 // ── Users ──────────────────────────────────────────────────────────────
 
 User Database::getOrCreateUser(const std::string& provider, const std::string& providerId,
                                 const std::string& email, const std::string& name,
                                 const std::string& avatarUrl) {
     // Try to find existing user
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_,
+    User u;
+    bool found = false;
+    backend_->query(
         "SELECT id, provider, provider_id, email, name, avatar_url, created_at "
         "FROM users WHERE provider = ? AND provider_id = ?",
-        -1, &stmt, nullptr);
-    sqlite3_bind_text(stmt, 1, provider.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, providerId.c_str(), -1, SQLITE_TRANSIENT);
+        {Param::Text(provider), Param::Text(providerId)},
+        [&](const Row& r) {
+            u.id = r.getInt(0);
+            u.provider = r.getText(1);
+            u.provider_id = r.getText(2);
+            u.email = r.getText(3);
+            u.name = r.getText(4);
+            u.avatar_url = r.getText(5);
+            u.created_at = r.getText(6);
+            found = true;
+        });
 
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        User u;
-        u.id = sqlite3_column_int(stmt, 0);
-        u.provider = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        u.provider_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        u.email = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        u.name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        u.avatar_url = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        u.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
-        sqlite3_finalize(stmt);
-
-        // Update name/email/avatar if changed
-        sqlite3_stmt* upd = nullptr;
-        sqlite3_prepare_v2(db_,
+    if (found) {
+        backend_->execute(
             "UPDATE users SET email = ?, name = ?, avatar_url = ? WHERE id = ?",
-            -1, &upd, nullptr);
-        sqlite3_bind_text(upd, 1, email.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(upd, 2, name.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(upd, 3, avatarUrl.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(upd, 4, u.id);
-        sqlite3_step(upd);
-        sqlite3_finalize(upd);
-
+            {Param::Text(email), Param::Text(name), Param::Text(avatarUrl), Param::Int(u.id)});
         u.email = email;
         u.name = name;
         u.avatar_url = avatarUrl;
         return u;
     }
-    sqlite3_finalize(stmt);
 
-    // Create new user
     std::string ts = now();
-    sqlite3_stmt* ins = nullptr;
-    sqlite3_prepare_v2(db_,
-        "INSERT INTO users (provider, provider_id, email, name, avatar_url, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        -1, &ins, nullptr);
-    sqlite3_bind_text(ins, 1, provider.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(ins, 2, providerId.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(ins, 3, email.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(ins, 4, name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(ins, 5, avatarUrl.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(ins, 6, ts.c_str(), -1, SQLITE_TRANSIENT);
+    int id = backend_->insertReturningId(insertUserSql(),
+        {Param::Text(provider), Param::Text(providerId), Param::Text(email),
+         Param::Text(name), Param::Text(avatarUrl), Param::Text(ts)});
 
-    if (sqlite3_step(ins) != SQLITE_DONE) {
-        sqlite3_finalize(ins);
-        throw std::runtime_error("Failed to create user");
-    }
-    int id = static_cast<int>(sqlite3_last_insert_rowid(db_));
-    sqlite3_finalize(ins);
-
-    User u;
     u.id = id;
     u.provider = provider;
     u.provider_id = providerId;
@@ -214,25 +317,21 @@ User Database::getOrCreateUser(const std::string& provider, const std::string& p
 
 std::optional<User> Database::getUserById(int id) {
     std::optional<User> result;
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_,
+    backend_->query(
         "SELECT id, provider, provider_id, email, name, avatar_url, created_at "
         "FROM users WHERE id = ?",
-        -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, id);
-
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        User u;
-        u.id = sqlite3_column_int(stmt, 0);
-        u.provider = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        u.provider_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        u.email = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        u.name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        u.avatar_url = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        u.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
-        result = u;
-    }
-    sqlite3_finalize(stmt);
+        {Param::Int(id)},
+        [&](const Row& r) {
+            User u;
+            u.id = r.getInt(0);
+            u.provider = r.getText(1);
+            u.provider_id = r.getText(2);
+            u.email = r.getText(3);
+            u.name = r.getText(4);
+            u.avatar_url = r.getText(5);
+            u.created_at = r.getText(6);
+            result = u;
+        });
     return result;
 }
 
@@ -242,7 +341,6 @@ std::string Database::createSession(int userId) {
     std::string token = generateSessionToken();
     std::string ts = now();
 
-    // Expires in 30 days
     auto t = std::time(nullptr);
     t += 30 * 24 * 60 * 60;
     std::tm tm_buf;
@@ -255,99 +353,42 @@ std::string Database::createSession(int userId) {
     oss << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%S");
     std::string expiresAt = oss.str();
 
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_,
-        "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-        -1, &stmt, nullptr);
-    sqlite3_bind_text(stmt, 1, token.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 2, userId);
-    sqlite3_bind_text(stmt, 3, ts.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 4, expiresAt.c_str(), -1, SQLITE_TRANSIENT);
-
-    if (sqlite3_step(stmt) != SQLITE_DONE) {
-        sqlite3_finalize(stmt);
-        throw std::runtime_error("Failed to create session");
-    }
-    sqlite3_finalize(stmt);
+    backend_->execute(insertSessionSql(),
+        {Param::Text(token), Param::Int(userId), Param::Text(ts), Param::Text(expiresAt)});
     return token;
 }
 
 std::optional<int> Database::validateSession(const std::string& token) {
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_,
-        "SELECT user_id, expires_at FROM sessions WHERE token = ?",
-        -1, &stmt, nullptr);
-    sqlite3_bind_text(stmt, 1, token.c_str(), -1, SQLITE_TRANSIENT);
-
     std::optional<int> result;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        int userId = sqlite3_column_int(stmt, 0);
-        std::string expiresAt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        std::string current = now();
-        if (current < expiresAt) {
-            result = userId;
-        }
-    }
-    sqlite3_finalize(stmt);
+    std::string current = now();
+    backend_->query(
+        "SELECT user_id, expires_at FROM sessions WHERE token = ?",
+        {Param::Text(token)},
+        [&](const Row& r) {
+            int userId = r.getInt(0);
+            std::string expiresAt = r.getText(1);
+            if (current < expiresAt) {
+                result = userId;
+            }
+        });
     return result;
 }
 
 void Database::deleteSession(const std::string& token) {
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, "DELETE FROM sessions WHERE token = ?", -1, &stmt, nullptr);
-    sqlite3_bind_text(stmt, 1, token.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
+    backend_->execute("DELETE FROM sessions WHERE token = ?", {Param::Text(token)});
 }
 
 // ── Tasks ──────────────────────────────────────────────────────────────
 
-static Task rowToTask(sqlite3_stmt* stmt) {
-    Task t;
-    t.id                = sqlite3_column_int(stmt, 0);
-    // column 1 is user_id, skip it for the Task struct
-    t.parent_id         = sqlite3_column_int(stmt, 2);
-    t.title             = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-    t.description       = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-    t.priority          = sqlite3_column_int(stmt, 5);
-    t.estimated_minutes = sqlite3_column_int(stmt, 6);
-    t.actual_minutes    = sqlite3_column_int(stmt, 7);
-    t.category          = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 8));
-    t.status            = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9));
-    t.due_date          = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
-    t.created_at        = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11));
-    t.updated_at        = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 12));
-    return t;
-}
-
 Task Database::createTask(int userId, const Task& task) {
     std::string ts = now();
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "INSERT INTO tasks "
-        "(user_id, parent_id, title, description, priority, estimated_minutes, actual_minutes, "
-        "category, status, due_date, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, userId);
-    sqlite3_bind_int(stmt, 2, task.parent_id);
-    sqlite3_bind_text(stmt, 3, task.title.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 4, task.description.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 5, task.priority);
-    sqlite3_bind_int(stmt, 6, task.estimated_minutes);
-    sqlite3_bind_int(stmt, 7, task.actual_minutes);
-    sqlite3_bind_text(stmt, 8, task.category.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 9, task.status.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 10, task.due_date.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 11, ts.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 12, ts.c_str(), -1, SQLITE_TRANSIENT);
-
-    if (sqlite3_step(stmt) != SQLITE_DONE) {
-        sqlite3_finalize(stmt);
-        throw std::runtime_error("Failed to create task");
-    }
-    int id = static_cast<int>(sqlite3_last_insert_rowid(db_));
-    sqlite3_finalize(stmt);
+    int id = backend_->insertReturningId(insertTaskSql(),
+        {Param::Int(userId), Param::Int(task.parent_id),
+         Param::Text(task.title), Param::Text(task.description),
+         Param::Int(task.priority), Param::Int(task.estimated_minutes),
+         Param::Int(task.actual_minutes), Param::Text(task.category),
+         Param::Text(task.status), Param::Text(task.due_date),
+         Param::Text(ts), Param::Text(ts)});
 
     Task result = task;
     result.id = id;
@@ -358,134 +399,101 @@ Task Database::createTask(int userId, const Task& task) {
 
 std::optional<Task> Database::getTask(int userId, int id) {
     std::optional<Task> result;
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, "SELECT * FROM tasks WHERE id = ? AND user_id = ?",
-                        -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, id);
-    sqlite3_bind_int(stmt, 2, userId);
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        result = rowToTask(stmt);
-    }
-    sqlite3_finalize(stmt);
+    std::string sql = std::string("SELECT ") + TASK_COLS +
+                      " FROM tasks WHERE id = ? AND user_id = ?";
+    backend_->query(sql, {Param::Int(id), Param::Int(userId)},
+        [&](const Row& r) { result = rowToTask(r); });
     return result;
 }
 
 std::vector<Task> Database::getAllTasks(int userId, const std::string& status,
                                         const std::string& category) {
     std::vector<Task> tasks;
-    std::string sql = "SELECT * FROM tasks WHERE user_id = ?";
-    if (!status.empty())   sql += " AND status = '" + status + "'";
-    if (!category.empty()) sql += " AND category = '" + category + "'";
+    std::string sql = std::string("SELECT ") + TASK_COLS + " FROM tasks WHERE user_id = ?";
+    std::vector<Param> params = {Param::Int(userId)};
+
+    if (!status.empty()) {
+        sql += " AND status = ?";
+        params.push_back(Param::Text(status));
+    }
+    if (!category.empty()) {
+        sql += " AND category = ?";
+        params.push_back(Param::Text(category));
+    }
     sql += " ORDER BY priority ASC, due_date ASC";
 
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, userId);
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        tasks.push_back(rowToTask(stmt));
-    }
-    sqlite3_finalize(stmt);
+    backend_->query(sql, params, [&](const Row& r) { tasks.push_back(rowToTask(r)); });
     return tasks;
 }
 
 bool Database::updateTask(int userId, int id, const Task& task) {
     std::string ts = now();
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "UPDATE tasks SET "
-        "parent_id=?, title=?, description=?, priority=?, estimated_minutes=?, "
-        "actual_minutes=?, category=?, status=?, due_date=?, updated_at=? "
-        "WHERE id=? AND user_id=?";
-
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, task.parent_id);
-    sqlite3_bind_text(stmt, 2, task.title.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, task.description.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 4, task.priority);
-    sqlite3_bind_int(stmt, 5, task.estimated_minutes);
-    sqlite3_bind_int(stmt, 6, task.actual_minutes);
-    sqlite3_bind_text(stmt, 7, task.category.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 8, task.status.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 9, task.due_date.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 10, ts.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 11, id);
-    sqlite3_bind_int(stmt, 12, userId);
-
-    bool ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) > 0;
-    sqlite3_finalize(stmt);
-    return ok;
+    int affected = backend_->execute(
+        "UPDATE tasks SET parent_id=?, title=?, description=?, priority=?, "
+        "estimated_minutes=?, actual_minutes=?, category=?, status=?, due_date=?, updated_at=? "
+        "WHERE id=? AND user_id=?",
+        {Param::Int(task.parent_id), Param::Text(task.title), Param::Text(task.description),
+         Param::Int(task.priority), Param::Int(task.estimated_minutes),
+         Param::Int(task.actual_minutes), Param::Text(task.category),
+         Param::Text(task.status), Param::Text(task.due_date), Param::Text(ts),
+         Param::Int(id), Param::Int(userId)});
+    return affected > 0;
 }
 
 bool Database::deleteTask(int userId, int id) {
     auto task = getTask(userId, id);
     int parentId = task ? task->parent_id : 0;
 
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, "DELETE FROM tasks WHERE id = ? AND user_id = ?",
-                        -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, id);
-    sqlite3_bind_int(stmt, 2, userId);
-    bool ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) > 0;
-    sqlite3_finalize(stmt);
+    backend_->beginTransaction();
+    try {
+        int affected = backend_->execute(
+            "DELETE FROM tasks WHERE id = ? AND user_id = ?",
+            {Param::Int(id), Param::Int(userId)});
 
-    if (ok) {
-        // Delete children recursively
-        std::vector<int> childIds;
-        sqlite3_stmt* q = nullptr;
-        sqlite3_prepare_v2(db_,
-            "SELECT id FROM tasks WHERE parent_id = ? AND user_id = ?",
-            -1, &q, nullptr);
-        sqlite3_bind_int(q, 1, id);
-        sqlite3_bind_int(q, 2, userId);
-        while (sqlite3_step(q) == SQLITE_ROW) {
-            childIds.push_back(sqlite3_column_int(q, 0));
-        }
-        sqlite3_finalize(q);
+        if (affected > 0) {
+            // Delete children recursively
+            std::vector<int> childIds;
+            backend_->query(
+                "SELECT id FROM tasks WHERE parent_id = ? AND user_id = ?",
+                {Param::Int(id), Param::Int(userId)},
+                [&](const Row& r) { childIds.push_back(r.getInt(0)); });
 
-        for (int cid : childIds) {
-            deleteTask(userId, cid);
+            for (int cid : childIds) {
+                backend_->execute("DELETE FROM tasks WHERE id = ? AND user_id = ?",
+                    {Param::Int(cid), Param::Int(userId)});
+            }
         }
-        if (parentId > 0) recalcEstimate(parentId);
+        backend_->commit();
+
+        if (affected > 0 && parentId > 0) {
+            recalcEstimate(parentId);
+        }
+        return affected > 0;
+    } catch (...) {
+        backend_->rollback();
+        throw;
     }
-    return ok;
 }
 
 void Database::recalcEstimate(int taskId) {
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_,
-        "SELECT COUNT(*), COALESCE(SUM(estimated_minutes), 0) "
-        "FROM tasks WHERE parent_id = ?", -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, taskId);
-
     int childCount = 0, total = 0;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        childCount = sqlite3_column_int(stmt, 0);
-        total = sqlite3_column_int(stmt, 1);
-    }
-    sqlite3_finalize(stmt);
+    backend_->query(
+        "SELECT COUNT(*), COALESCE(SUM(estimated_minutes), 0) FROM tasks WHERE parent_id = ?",
+        {Param::Int(taskId)},
+        [&](const Row& r) { childCount = r.getInt(0); total = r.getInt(1); });
 
     if (childCount == 0) return;
 
-    sqlite3_stmt* upd = nullptr;
-    sqlite3_prepare_v2(db_,
-        "UPDATE tasks SET estimated_minutes = ?, updated_at = ? WHERE id = ?",
-        -1, &upd, nullptr);
     std::string ts = now();
-    sqlite3_bind_int(upd, 1, total);
-    sqlite3_bind_text(upd, 2, ts.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(upd, 3, taskId);
-    sqlite3_step(upd);
-    sqlite3_finalize(upd);
+    backend_->execute(
+        "UPDATE tasks SET estimated_minutes = ?, updated_at = ? WHERE id = ?",
+        {Param::Int(total), Param::Text(ts), Param::Int(taskId)});
 
-    // Recurse up — we need to find parent without user_id filter since
-    // recalcEstimate is called internally after a user-scoped operation
-    sqlite3_stmt* pq = nullptr;
-    sqlite3_prepare_v2(db_, "SELECT parent_id FROM tasks WHERE id = ?", -1, &pq, nullptr);
-    sqlite3_bind_int(pq, 1, taskId);
     int parentId = 0;
-    if (sqlite3_step(pq) == SQLITE_ROW) {
-        parentId = sqlite3_column_int(pq, 0);
-    }
-    sqlite3_finalize(pq);
+    backend_->query(
+        "SELECT parent_id FROM tasks WHERE id = ?",
+        {Param::Int(taskId)},
+        [&](const Row& r) { parentId = r.getInt(0); });
 
     if (parentId > 0) {
         recalcEstimate(parentId);
@@ -497,23 +505,37 @@ void Database::recalcEstimate(int taskId) {
 Plan Database::createPlan(int userId, const Plan& plan) {
     std::string ts = now();
     nlohmann::json itemsJson = plan.items;
+    std::string itemsStr = itemsJson.dump();
 
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "INSERT OR REPLACE INTO plans (user_id, type, date, items_json, created_at) "
-                      "VALUES (?, ?, ?, ?, ?)";
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, userId);
-    sqlite3_bind_text(stmt, 2, plan.type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, plan.date.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 4, itemsJson.dump().c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 5, ts.c_str(), -1, SQLITE_TRANSIENT);
+    int id = 0;
+    if (useAzureSql_) {
+        // Azure SQL: UPDATE-then-INSERT (no INSERT OR REPLACE)
+        int affected = backend_->execute(
+            "UPDATE plans SET items_json = ?, reviewed = 0, created_at = ? "
+            "WHERE user_id = ? AND type = ? AND date = ?",
+            {Param::Text(itemsStr), Param::Text(ts),
+             Param::Int(userId), Param::Text(plan.type), Param::Text(plan.date)});
 
-    if (sqlite3_step(stmt) != SQLITE_DONE) {
-        sqlite3_finalize(stmt);
-        throw std::runtime_error("Failed to create plan");
+        if (affected > 0) {
+            backend_->query(
+                "SELECT id FROM plans WHERE user_id = ? AND type = ? AND date = ?",
+                {Param::Int(userId), Param::Text(plan.type), Param::Text(plan.date)},
+                [&](const Row& r) { id = r.getInt(0); });
+        } else {
+            id = backend_->insertReturningId(
+                "INSERT INTO plans (user_id, type, date, items_json, created_at) "
+                "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?)",
+                {Param::Int(userId), Param::Text(plan.type), Param::Text(plan.date),
+                 Param::Text(itemsStr), Param::Text(ts)});
+        }
+    } else {
+        // SQLite: INSERT OR REPLACE
+        id = backend_->insertReturningId(
+            "INSERT OR REPLACE INTO plans (user_id, type, date, items_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            {Param::Int(userId), Param::Text(plan.type), Param::Text(plan.date),
+             Param::Text(itemsStr), Param::Text(ts)});
     }
-    int id = static_cast<int>(sqlite3_last_insert_rowid(db_));
-    sqlite3_finalize(stmt);
 
     Plan result = plan;
     result.id = id;
@@ -524,98 +546,67 @@ Plan Database::createPlan(int userId, const Plan& plan) {
 std::optional<Plan> Database::getPlanByTypeAndDate(int userId, const std::string& type,
                                                     const std::string& date) {
     std::optional<Plan> result;
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_,
+    backend_->query(
         "SELECT id, type, date, items_json, reviewed, created_at FROM plans "
-        "WHERE user_id = ? AND type = ? AND date = ?", -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, userId);
-    sqlite3_bind_text(stmt, 2, type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, date.c_str(), -1, SQLITE_TRANSIENT);
-
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        Plan p;
-        p.id = sqlite3_column_int(stmt, 0);
-        p.type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        p.date = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        auto itemsStr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        p.items = nlohmann::json::parse(itemsStr).get<std::vector<PlanItem>>();
-        p.reviewed = sqlite3_column_int(stmt, 4) != 0;
-        p.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        result = p;
-    }
-    sqlite3_finalize(stmt);
+        "WHERE user_id = ? AND type = ? AND date = ?",
+        {Param::Int(userId), Param::Text(type), Param::Text(date)},
+        [&](const Row& r) {
+            Plan p;
+            p.id = r.getInt(0);
+            p.type = r.getText(1);
+            p.date = r.getText(2);
+            auto itemsStr = r.getText(3);
+            p.items = nlohmann::json::parse(itemsStr).get<std::vector<PlanItem>>();
+            p.reviewed = r.getInt(4) != 0;
+            p.created_at = r.getText(5);
+            result = p;
+        });
     return result;
 }
 
 bool Database::markPlanReviewed(int userId, int id) {
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, "UPDATE plans SET reviewed = 1 WHERE id = ? AND user_id = ?",
-                        -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, id);
-    sqlite3_bind_int(stmt, 2, userId);
-    bool ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) > 0;
-    sqlite3_finalize(stmt);
-    return ok;
+    int affected = backend_->execute(
+        "UPDATE plans SET reviewed = 1 WHERE id = ? AND user_id = ?",
+        {Param::Int(id), Param::Int(userId)});
+    return affected > 0;
 }
 
 std::vector<Plan> Database::getUnreviewedDailyPlans(int userId,
                                                      const std::string& beforeDate,
                                                      const std::string& monday) {
     std::vector<Plan> plans;
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_,
+    backend_->query(
         "SELECT id, type, date, items_json, reviewed, created_at FROM plans "
         "WHERE user_id = ? AND type = 'daily' AND reviewed = 0 AND date < ? AND date >= ? "
-        "ORDER BY date ASC", -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, userId);
-    sqlite3_bind_text(stmt, 2, beforeDate.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, monday.c_str(), -1, SQLITE_TRANSIENT);
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        Plan p;
-        p.id = sqlite3_column_int(stmt, 0);
-        p.type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        p.date = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        auto itemsStr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        p.items = nlohmann::json::parse(itemsStr).get<std::vector<PlanItem>>();
-        p.reviewed = sqlite3_column_int(stmt, 4) != 0;
-        p.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        plans.push_back(p);
-    }
-    sqlite3_finalize(stmt);
+        "ORDER BY date ASC",
+        {Param::Int(userId), Param::Text(beforeDate), Param::Text(monday)},
+        [&](const Row& r) {
+            Plan p;
+            p.id = r.getInt(0);
+            p.type = r.getText(1);
+            p.date = r.getText(2);
+            auto itemsStr = r.getText(3);
+            p.items = nlohmann::json::parse(itemsStr).get<std::vector<PlanItem>>();
+            p.reviewed = r.getInt(4) != 0;
+            p.created_at = r.getText(5);
+            plans.push_back(p);
+        });
     return plans;
 }
 
 bool Database::deletePlan(int userId, int id) {
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, "DELETE FROM plans WHERE id = ? AND user_id = ?",
-                        -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, id);
-    sqlite3_bind_int(stmt, 2, userId);
-    bool ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) > 0;
-    sqlite3_finalize(stmt);
-    return ok;
+    int affected = backend_->execute(
+        "DELETE FROM plans WHERE id = ? AND user_id = ?",
+        {Param::Int(id), Param::Int(userId)});
+    return affected > 0;
 }
 
 // ── Productivity Logs ──────────────────────────────────────────────────
 
 ProductivityLog Database::createLog(int userId, const ProductivityLog& log) {
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "INSERT INTO productivity_logs "
-        "(user_id, task_id, start_time, end_time, notes) VALUES (?, ?, ?, ?, ?)";
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, userId);
-    sqlite3_bind_int(stmt, 2, log.task_id);
-    sqlite3_bind_text(stmt, 3, log.start_time.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 4, log.end_time.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 5, log.notes.c_str(), -1, SQLITE_TRANSIENT);
-
-    if (sqlite3_step(stmt) != SQLITE_DONE) {
-        sqlite3_finalize(stmt);
-        throw std::runtime_error("Failed to create log");
-    }
-    int id = static_cast<int>(sqlite3_last_insert_rowid(db_));
-    sqlite3_finalize(stmt);
+    int id = backend_->insertReturningId(insertLogSql(),
+        {Param::Int(userId), Param::Int(log.task_id),
+         Param::Text(log.start_time), Param::Text(log.end_time), Param::Text(log.notes)});
 
     ProductivityLog result = log;
     result.id = id;
@@ -624,24 +615,19 @@ ProductivityLog Database::createLog(int userId, const ProductivityLog& log) {
 
 std::vector<ProductivityLog> Database::getLogsByTaskId(int userId, int taskId) {
     std::vector<ProductivityLog> logs;
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_,
+    backend_->query(
         "SELECT id, task_id, start_time, end_time, notes "
         "FROM productivity_logs WHERE user_id = ? AND task_id = ? ORDER BY start_time DESC",
-        -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, userId);
-    sqlite3_bind_int(stmt, 2, taskId);
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        ProductivityLog l;
-        l.id         = sqlite3_column_int(stmt, 0);
-        l.task_id    = sqlite3_column_int(stmt, 1);
-        l.start_time = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        l.end_time   = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        l.notes      = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        logs.push_back(l);
-    }
-    sqlite3_finalize(stmt);
+        {Param::Int(userId), Param::Int(taskId)},
+        [&](const Row& r) {
+            ProductivityLog l;
+            l.id = r.getInt(0);
+            l.task_id = r.getInt(1);
+            l.start_time = r.getText(2);
+            l.end_time = r.getText(3);
+            l.notes = r.getText(4);
+            logs.push_back(l);
+        });
     return logs;
 }
 
@@ -649,32 +635,58 @@ std::vector<ProductivityLog> Database::getLogsByTaskId(int userId, int taskId) {
 
 WeeklySummary Database::createSummary(int userId, const WeeklySummary& summary) {
     std::string ts = now();
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "INSERT OR REPLACE INTO weekly_summaries "
-        "(user_id, week_date, total_planned, total_completed, total_actual, "
-        "tasks_planned, tasks_completed, tasks_carried_over, "
-        "category_breakdown, completed_tasks, incomplete_tasks, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, userId);
-    sqlite3_bind_text(stmt, 2, summary.week_date.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 3, summary.total_planned);
-    sqlite3_bind_int(stmt, 4, summary.total_completed);
-    sqlite3_bind_int(stmt, 5, summary.total_actual);
-    sqlite3_bind_int(stmt, 6, summary.tasks_planned);
-    sqlite3_bind_int(stmt, 7, summary.tasks_completed);
-    sqlite3_bind_int(stmt, 8, summary.tasks_carried_over);
-    sqlite3_bind_text(stmt, 9, summary.category_breakdown.dump().c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 10, summary.completed_tasks.dump().c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 11, summary.incomplete_tasks.dump().c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 12, ts.c_str(), -1, SQLITE_TRANSIENT);
+    std::string catBreakdown = summary.category_breakdown.dump();
+    std::string completedTasks = summary.completed_tasks.dump();
+    std::string incompleteTasks = summary.incomplete_tasks.dump();
 
-    if (sqlite3_step(stmt) != SQLITE_DONE) {
-        sqlite3_finalize(stmt);
-        throw std::runtime_error("Failed to create summary");
+    int id = 0;
+    if (useAzureSql_) {
+        // Azure SQL: UPDATE-then-INSERT
+        int affected = backend_->execute(
+            "UPDATE weekly_summaries SET total_planned=?, total_completed=?, total_actual=?, "
+            "tasks_planned=?, tasks_completed=?, tasks_carried_over=?, "
+            "category_breakdown=?, completed_tasks=?, incomplete_tasks=?, created_at=? "
+            "WHERE user_id = ? AND week_date = ?",
+            {Param::Int(summary.total_planned), Param::Int(summary.total_completed),
+             Param::Int(summary.total_actual), Param::Int(summary.tasks_planned),
+             Param::Int(summary.tasks_completed), Param::Int(summary.tasks_carried_over),
+             Param::Text(catBreakdown), Param::Text(completedTasks),
+             Param::Text(incompleteTasks), Param::Text(ts),
+             Param::Int(userId), Param::Text(summary.week_date)});
+
+        if (affected > 0) {
+            backend_->query(
+                "SELECT id FROM weekly_summaries WHERE user_id = ? AND week_date = ?",
+                {Param::Int(userId), Param::Text(summary.week_date)},
+                [&](const Row& r) { id = r.getInt(0); });
+        } else {
+            id = backend_->insertReturningId(
+                "INSERT INTO weekly_summaries (user_id, week_date, total_planned, total_completed, "
+                "total_actual, tasks_planned, tasks_completed, tasks_carried_over, "
+                "category_breakdown, completed_tasks, incomplete_tasks, created_at) "
+                "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                {Param::Int(userId), Param::Text(summary.week_date),
+                 Param::Int(summary.total_planned), Param::Int(summary.total_completed),
+                 Param::Int(summary.total_actual), Param::Int(summary.tasks_planned),
+                 Param::Int(summary.tasks_completed), Param::Int(summary.tasks_carried_over),
+                 Param::Text(catBreakdown), Param::Text(completedTasks),
+                 Param::Text(incompleteTasks), Param::Text(ts)});
+        }
+    } else {
+        // SQLite: INSERT OR REPLACE
+        id = backend_->insertReturningId(
+            "INSERT OR REPLACE INTO weekly_summaries "
+            "(user_id, week_date, total_planned, total_completed, total_actual, "
+            "tasks_planned, tasks_completed, tasks_carried_over, "
+            "category_breakdown, completed_tasks, incomplete_tasks, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            {Param::Int(userId), Param::Text(summary.week_date),
+             Param::Int(summary.total_planned), Param::Int(summary.total_completed),
+             Param::Int(summary.total_actual), Param::Int(summary.tasks_planned),
+             Param::Int(summary.tasks_completed), Param::Int(summary.tasks_carried_over),
+             Param::Text(catBreakdown), Param::Text(completedTasks),
+             Param::Text(incompleteTasks), Param::Text(ts)});
     }
-    int id = static_cast<int>(sqlite3_last_insert_rowid(db_));
-    sqlite3_finalize(stmt);
 
     WeeklySummary result = summary;
     result.id = id;
@@ -684,69 +696,55 @@ WeeklySummary Database::createSummary(int userId, const WeeklySummary& summary) 
 
 std::optional<WeeklySummary> Database::getSummary(int userId, const std::string& weekDate) {
     std::optional<WeeklySummary> result;
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_,
+    backend_->query(
         "SELECT id, week_date, total_planned, total_completed, total_actual, "
         "tasks_planned, tasks_completed, tasks_carried_over, "
         "category_breakdown, completed_tasks, incomplete_tasks, created_at "
-        "FROM weekly_summaries WHERE user_id = ? AND week_date = ?", -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, userId);
-    sqlite3_bind_text(stmt, 2, weekDate.c_str(), -1, SQLITE_TRANSIENT);
-
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        WeeklySummary s;
-        s.id = sqlite3_column_int(stmt, 0);
-        s.week_date = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        s.total_planned = sqlite3_column_int(stmt, 2);
-        s.total_completed = sqlite3_column_int(stmt, 3);
-        s.total_actual = sqlite3_column_int(stmt, 4);
-        s.tasks_planned = sqlite3_column_int(stmt, 5);
-        s.tasks_completed = sqlite3_column_int(stmt, 6);
-        s.tasks_carried_over = sqlite3_column_int(stmt, 7);
-        s.category_breakdown = nlohmann::json::parse(
-            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 8)));
-        s.completed_tasks = nlohmann::json::parse(
-            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9)));
-        s.incomplete_tasks = nlohmann::json::parse(
-            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10)));
-        s.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11));
-        result = s;
-    }
-    sqlite3_finalize(stmt);
+        "FROM weekly_summaries WHERE user_id = ? AND week_date = ?",
+        {Param::Int(userId), Param::Text(weekDate)},
+        [&](const Row& r) {
+            WeeklySummary s;
+            s.id = r.getInt(0);
+            s.week_date = r.getText(1);
+            s.total_planned = r.getInt(2);
+            s.total_completed = r.getInt(3);
+            s.total_actual = r.getInt(4);
+            s.tasks_planned = r.getInt(5);
+            s.tasks_completed = r.getInt(6);
+            s.tasks_carried_over = r.getInt(7);
+            s.category_breakdown = nlohmann::json::parse(r.getText(8));
+            s.completed_tasks = nlohmann::json::parse(r.getText(9));
+            s.incomplete_tasks = nlohmann::json::parse(r.getText(10));
+            s.created_at = r.getText(11);
+            result = s;
+        });
     return result;
 }
 
 std::vector<WeeklySummary> Database::getAllSummaries(int userId) {
     std::vector<WeeklySummary> summaries;
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_,
+    backend_->query(
         "SELECT id, week_date, total_planned, total_completed, total_actual, "
         "tasks_planned, tasks_completed, tasks_carried_over, "
         "category_breakdown, completed_tasks, incomplete_tasks, created_at "
         "FROM weekly_summaries WHERE user_id = ? ORDER BY week_date DESC",
-        -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, userId);
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        WeeklySummary s;
-        s.id = sqlite3_column_int(stmt, 0);
-        s.week_date = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        s.total_planned = sqlite3_column_int(stmt, 2);
-        s.total_completed = sqlite3_column_int(stmt, 3);
-        s.total_actual = sqlite3_column_int(stmt, 4);
-        s.tasks_planned = sqlite3_column_int(stmt, 5);
-        s.tasks_completed = sqlite3_column_int(stmt, 6);
-        s.tasks_carried_over = sqlite3_column_int(stmt, 7);
-        s.category_breakdown = nlohmann::json::parse(
-            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 8)));
-        s.completed_tasks = nlohmann::json::parse(
-            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9)));
-        s.incomplete_tasks = nlohmann::json::parse(
-            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10)));
-        s.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11));
-        summaries.push_back(s);
-    }
-    sqlite3_finalize(stmt);
+        {Param::Int(userId)},
+        [&](const Row& r) {
+            WeeklySummary s;
+            s.id = r.getInt(0);
+            s.week_date = r.getText(1);
+            s.total_planned = r.getInt(2);
+            s.total_completed = r.getInt(3);
+            s.total_actual = r.getInt(4);
+            s.tasks_planned = r.getInt(5);
+            s.tasks_completed = r.getInt(6);
+            s.tasks_carried_over = r.getInt(7);
+            s.category_breakdown = nlohmann::json::parse(r.getText(8));
+            s.completed_tasks = nlohmann::json::parse(r.getText(9));
+            s.incomplete_tasks = nlohmann::json::parse(r.getText(10));
+            s.created_at = r.getText(11);
+            summaries.push_back(s);
+        });
     return summaries;
 }
 
@@ -754,14 +752,9 @@ std::vector<WeeklySummary> Database::getAllSummaries(int userId) {
 
 std::vector<std::string> Database::getCategories(int userId) {
     std::vector<std::string> cats;
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_,
-        "SELECT DISTINCT category FROM tasks WHERE user_id = ? AND category != '' ORDER BY category",
-        -1, &stmt, nullptr);
-    sqlite3_bind_int(stmt, 1, userId);
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        cats.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
-    }
-    sqlite3_finalize(stmt);
+    backend_->query(
+        "SELECT DISTINCT category FROM tasks WHERE user_id = ? AND category <> '' ORDER BY category",
+        {Param::Int(userId)},
+        [&](const Row& r) { cats.push_back(r.getText(0)); });
     return cats;
 }

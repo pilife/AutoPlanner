@@ -3,13 +3,14 @@
 #include <string>
 #include <vector>
 #include <optional>
-#include <functional>
-#include <sqlite3.h>
+#include <memory>
 #include "models.h"
+#include "db_backend.h"
 
 class Database {
 public:
-    explicit Database(const std::string& path);
+    // Reads AZURE_SQL_CONNECTION_STRING env var. If set, uses ODBC. Otherwise SQLite.
+    explicit Database(const std::string& sqlitePath = "autoplanner.db");
     ~Database();
 
     Database(const Database&) = delete;
@@ -34,7 +35,6 @@ public:
     bool updateTask(int userId, int id, const Task& task);
     bool deleteTask(int userId, int id);
 
-    // Recompute parent estimated_minutes as sum of children (recursive up)
     void recalcEstimate(int taskId);
 
     // Plans
@@ -59,12 +59,17 @@ public:
     std::vector<std::string> getCategories(int userId);
 
 private:
-    sqlite3* db_ = nullptr;
+    std::unique_ptr<DbBackend> backend_;
+    bool useAzureSql_ = false;
 
     void initTables();
-    void exec(const std::string& sql);
-    void query(const std::string& sql,
-               const std::function<void(sqlite3_stmt*)>& rowCallback);
-
     std::string now();
+
+    // SQL helpers that differ between backends
+    std::string insertTaskSql() const;
+    std::string insertPlanSql() const;
+    std::string insertSummarySql() const;
+    std::string insertLogSql() const;
+    std::string insertUserSql() const;
+    std::string insertSessionSql() const;
 };

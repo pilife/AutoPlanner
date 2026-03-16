@@ -12,17 +12,26 @@ RUN npm run build
 FROM ubuntu:24.04 AS backend-build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates libssl-dev \
+    unixodbc-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app/backend
 COPY backend/CMakeLists.txt ./
 COPY backend/src/ ./src/
-RUN cmake -B build -DCMAKE_BUILD_TYPE=Release \
+RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DUSE_AZURE_SQL=ON \
     && cmake --build build --config Release -j$(nproc)
 
 # Stage 3: Runtime
 FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3 \
+    unixodbc \
+    gnupg2 curl apt-transport-https \
+    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/ubuntu/24.04/prod noble main" > /etc/apt/sources.list.d/mssql-release.list \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
+    && apt-get purge -y gnupg2 curl apt-transport-https \
+    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -31,5 +40,8 @@ COPY --from=frontend-build /app/frontend/dist ./static
 
 EXPOSE 8080
 ENV PORT=8080
+
+ARG AZURE_SQL_CONNECTION_STRING=""
+ENV AZURE_SQL_CONNECTION_STRING=$AZURE_SQL_CONNECTION_STRING
 
 CMD ["sh", "-c", "./autoplanner $PORT ./static"]
