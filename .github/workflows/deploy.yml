@@ -37,5 +37,5 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Azure Web App is configured with continuous deployment
-      # and will auto-pull the new ghcr.io image when updated
+      - name: Trigger Azure Web App to pull new image
+        run: curl -sf -X POST "${{ secrets.AZURE_WEBAPP_WEBHOOK_URL }}" || echo "Webhook not configured yet"
