@@ -48,7 +48,16 @@ int main(int argc, char* argv[]) {
         port = std::stoi(argv[1]);
     }
 
-    Database db("autoplanner.db");
+    spdlog::info("Starting AutoPlanner...");
+
+    Database* dbPtr = nullptr;
+    try {
+        dbPtr = new Database("autoplanner.db");
+    } catch (const std::exception& e) {
+        spdlog::error("Failed to initialize database: {}", e.what());
+        return 1;
+    }
+    Database& db = *dbPtr;
 
     const char* seedEnv = std::getenv("AUTOPLANNER_SEED");
     if (seedEnv && std::string(seedEnv) == "1") {
@@ -109,5 +118,6 @@ int main(int argc, char* argv[]) {
     spdlog::info("AutoPlanner running on http://localhost:{}", port);
     server.listen("0.0.0.0", port);
 
+    delete dbPtr;
     return 0;
 }
