@@ -31,6 +31,21 @@ cc_library(
 """,
 )
 
+# spdlog (header-only logging library)
+http_archive(
+    name = "spdlog",
+    urls = ["https://github.com/gabime/spdlog/archive/refs/tags/v1.14.1.tar.gz"],
+    strip_prefix = "spdlog-1.14.1",
+    build_file_content = """
+cc_library(
+    name = "spdlog",
+    hdrs = glob(["include/**/*.h"]),
+    includes = ["include"],
+    visibility = ["//visibility:public"],
+)
+""",
+)
+
 # SQLite3 amalgamation
 http_archive(
     name = "sqlite3",

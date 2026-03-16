@@ -20,6 +20,12 @@ FetchContent_Declare(json
     GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(json)
 
+FetchContent_Declare(spdlog
+    GIT_REPOSITORY https://github.com/gabime/spdlog.git
+    GIT_TAG        v1.14.1
+    GIT_SHALLOW    TRUE)
+FetchContent_MakeAvailable(spdlog)
+
 # Download SQLite amalgamation directly instead of FetchContent
 # (avoids URL-in-list bug in older CMake)
 set(SQLITE_DIR ${CMAKE_BINARY_DIR}/sqlite3)
@@ -50,7 +56,7 @@ add_executable(autoplanner
 
 target_compile_definitions(autoplanner PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
 target_include_directories(autoplanner PRIVATE src)
-target_link_libraries(autoplanner PRIVATE httplib::httplib nlohmann_json::nlohmann_json sqlite3_lib OpenSSL::SSL OpenSSL::Crypto pthread)
+target_link_libraries(autoplanner PRIVATE httplib::httplib nlohmann_json::nlohmann_json spdlog::spdlog sqlite3_lib OpenSSL::SSL OpenSSL::Crypto pthread)
 
 if(USE_AZURE_SQL)
     find_library(ODBC_LIBRARY NAMES odbc32 odbc)

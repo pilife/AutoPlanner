@@ -3,6 +3,7 @@
 #include <sstream>
 #include <iomanip>
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
 #include <httplib.h>
@@ -77,13 +78,19 @@ std::optional<MsGraphUser> verifyMicrosoftToken(const std::string& accessToken,
                 user.email = j.value("userPrincipalName", "");
             }
             user.display_name = j.value("displayName", "");
-            if (!user.id.empty()) return user;
-        } catch (...) {}
+            if (!user.id.empty()) {
+                spdlog::info("[AUTH] MS Graph verified: {} ({})", user.email, user.display_name);
+                return user;
+            }
+        } catch (...) {
+            spdlog::warn("[AUTH] MS Graph response parse failed");
+        }
+    } else {
+        spdlog::warn("[AUTH] MS Graph call failed, status={}", result ? result->status : 0);
     }
 #endif
 
     // Fallback: decode the ID token (JWT) to extract user claims
-    // This works without SSL but doesn't verify the signature
     if (!idToken.empty()) {
         auto payload = decodeJwtPayload(idToken);
         if (payload) {
@@ -93,10 +100,15 @@ std::optional<MsGraphUser> verifyMicrosoftToken(const std::string& accessToken,
             user.email = payload->value("preferred_username", "");
             if (user.email.empty()) user.email = payload->value("email", "");
             user.display_name = payload->value("name", "");
-            if (!user.id.empty()) return user;
+            if (!user.id.empty()) {
+                spdlog::info("[AUTH] JWT decoded: {} ({})", user.email, user.display_name);
+                return user;
+            }
         }
+        spdlog::warn("[AUTH] JWT decode failed");
     }
 
+    spdlog::error("[AUTH] Token verification failed");
     return std::nullopt;
 }
 

@@ -1,6 +1,7 @@
 #include "routes.h"
 #include "auth.h"
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 #include <ctime>
 #include <sstream>
 #include <iomanip>
@@ -102,12 +103,14 @@ void registerRoutes(httplib::Server& server, Database& db) {
             auto user = db.getOrCreateUser("microsoft", msUser->id,
                                             msUser->email, msUser->display_name, "");
             auto sessionToken = db.createSession(user.id);
+            spdlog::info("[AUTH] Login: user={} (id={})", user.email, user.id);
 
             json result;
             result["session_token"] = sessionToken;
             result["user"] = user;
             jsonResponse(res, 200, result);
         } catch (const std::exception& e) {
+            spdlog::error("[AUTH] Login failed: {}", e.what());
             errorResponse(res, 400, e.what());
         }
     });

@@ -28,6 +28,7 @@ cc_binary(
     deps = [
         "@cpp_httplib//:httplib",
         "@nlohmann_json//:json",
+        "@spdlog//:spdlog",
         "@sqlite3//:sqlite3",
     ],
 )

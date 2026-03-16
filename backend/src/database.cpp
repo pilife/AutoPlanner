@@ -9,21 +9,27 @@
 #include <cstring>
 #include <sstream>
 #include <iomanip>
+#include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
 
 Database::Database(const std::string& sqlitePath) {
     const char* connStr = std::getenv("AZURE_SQL_CONNECTION_STRING");
 #ifdef HAS_AZURE_SQL
     if (connStr && std::strlen(connStr) > 0) {
+        spdlog::info("[DB] Connecting to Azure SQL...");
         backend_ = std::make_unique<AzureSqlBackend>(connStr);
         useAzureSql_ = true;
+        spdlog::info("[DB] Connected to Azure SQL");
     } else
 #endif
     {
         (void)connStr;
+        spdlog::info("[DB] Using SQLite: {}", sqlitePath);
         backend_ = std::make_unique<SqliteBackend>(sqlitePath);
     }
+    spdlog::info("[DB] Initializing tables...");
     initTables();
+    spdlog::info("[DB] Tables ready");
 }
 
 Database::~Database() = default;
