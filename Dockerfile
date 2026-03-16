@@ -22,17 +22,15 @@ RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DUSE_AZURE_SQL=ON \
 
 # Stage 3: Runtime
 FROM ubuntu:24.04
+# Install ODBC driver in two steps to avoid autoremove pulling out dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libssl3 \
-    unixodbc \
-    gnupg2 curl apt-transport-https \
+    ca-certificates libssl3 unixodbc gnupg2 curl \
     && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/ubuntu/24.04/prod noble main" > /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
-    && apt-get purge -y gnupg2 curl apt-transport-https \
-    && apt-get autoremove -y \
-    && rm -rf /var/lib/apt/lists/*
+    && ACCEPT_EULA=Y apt-get install -y msodbcsql18 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ldconfig
 
 WORKDIR /app
 COPY --from=backend-build /app/backend/build/autoplanner ./autoplanner
