@@ -76,7 +76,8 @@ void AzureSqlBackend::checkReturn(SQLRETURN ret, SQLSMALLINT handleType, SQLHAND
     }
 }
 
-SQLHSTMT AzureSqlBackend::prepareAndBind(const std::string& sql, const std::vector<Param>& params) {
+SQLHSTMT AzureSqlBackend::prepareAndBind(const std::string& sql, const std::vector<Param>& params,
+                                          std::vector<SQLLEN>& lenBuf) {
     SQLHSTMT hstmt = SQL_NULL_HSTMT;
     SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
 
@@ -84,22 +85,28 @@ SQLHSTMT AzureSqlBackend::prepareAndBind(const std::string& sql, const std::vect
                                 SQL_NTS);
     checkReturn(ret, SQL_HANDLE_STMT, hstmt, "prepare");
 
+    // Pre-allocate length indicators so pointers remain valid until execution
+    lenBuf.resize(params.size(), 0);
+
     for (size_t i = 0; i < params.size(); i++) {
         SQLUSMALLINT idx = static_cast<SQLUSMALLINT>(i + 1);
         switch (params[i].type) {
             case Param::INT: {
                 auto* intPtr = const_cast<int*>(&params[i].intVal);
+                lenBuf[i] = 0;
                 SQLBindParameter(hstmt, idx, SQL_PARAM_INPUT, SQL_C_SLONG,
-                                SQL_INTEGER, 0, 0, intPtr, 0, nullptr);
+                                SQL_INTEGER, 0, 0, intPtr, 0, &lenBuf[i]);
                 break;
             }
             case Param::TEXT: {
                 auto* textPtr = const_cast<char*>(params[i].textVal.c_str());
-                SQLLEN textLen = static_cast<SQLLEN>(params[i].textVal.size());
-                SQLLEN* lenPtr = const_cast<SQLLEN*>(&textLen);
+                lenBuf[i] = static_cast<SQLLEN>(params[i].textVal.size());
+                // Use SQL_WVARCHAR to match NVARCHAR columns on Azure SQL
+                SQLULEN colSize = std::max(static_cast<SQLULEN>(lenBuf[i] + 1),
+                                           static_cast<SQLULEN>(4000));
                 SQLBindParameter(hstmt, idx, SQL_PARAM_INPUT, SQL_C_CHAR,
-                                SQL_VARCHAR, params[i].textVal.size() + 1, 0,
-                                textPtr, textLen + 1, lenPtr);
+                                SQL_WVARCHAR, colSize, 0,
+                                textPtr, lenBuf[i] + 1, &lenBuf[i]);
                 break;
             }
         }
@@ -125,7 +132,8 @@ void AzureSqlBackend::exec(const std::string& sql) {
 void AzureSqlBackend::query(const std::string& sql, const std::vector<Param>& params,
                              RowCallback callback) {
     spdlog::debug("[SQL] query: {} | params: {}", truncate(sql, 120), paramsToString(params));
-    SQLHSTMT hstmt = prepareAndBind(sql, params);
+    std::vector<SQLLEN> lenBuf;
+    SQLHSTMT hstmt = prepareAndBind(sql, params, lenBuf);
     SQLRETURN ret = SQLExecute(hstmt);
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
         std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
@@ -143,7 +151,8 @@ void AzureSqlBackend::query(const std::string& sql, const std::vector<Param>& pa
 
 int AzureSqlBackend::execute(const std::string& sql, const std::vector<Param>& params) {
     spdlog::debug("[SQL] execute: {} | params: {}", truncate(sql, 120), paramsToString(params));
-    SQLHSTMT hstmt = prepareAndBind(sql, params);
+    std::vector<SQLLEN> lenBuf;
+    SQLHSTMT hstmt = prepareAndBind(sql, params, lenBuf);
     SQLRETURN ret = SQLExecute(hstmt);
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
         std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
@@ -160,7 +169,8 @@ int AzureSqlBackend::execute(const std::string& sql, const std::vector<Param>& p
 
 int AzureSqlBackend::insertReturningId(const std::string& sql, const std::vector<Param>& params) {
     spdlog::debug("[SQL] insert: {} | params: {}", truncate(sql, 120), paramsToString(params));
-    SQLHSTMT hstmt = prepareAndBind(sql, params);
+    std::vector<SQLLEN> lenBuf;
+    SQLHSTMT hstmt = prepareAndBind(sql, params, lenBuf);
     SQLRETURN ret = SQLExecute(hstmt);
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
         std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
