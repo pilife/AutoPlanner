@@ -17,15 +17,17 @@ AutoPlanner is a productivity planner for knowledge workers. It manages tasks an
   - `src/database.h/.cpp` — High-level Database class using DbBackend; switches SQLite/Azure SQL via `AZURE_SQL_CONNECTION_STRING` env var
   - `src/models.h` — Data structures (User, Task, Plan, PlanItem, WeeklySummary, ProductivityLog) with JSON serialization
   - `src/auth.h/.cpp` — Microsoft token verification (MS Graph with SSL, JWT decode fallback), session management, `requireAuth` wrapper
+  - `src/blob_storage.h` — Azure Blob Storage SAS token generation (OpenSSL HMAC-SHA256)
   - `src/routes.h/.cpp` — HTTP route handlers (all under `/api/`); all data routes wrapped with `requireAuth`
-  - `src/main.cpp` — Server entry point (default port 8080)
+  - `src/main.cpp` — Server entry point (default port 8080), spdlog logging init
   - `src/seed.h/.cpp` — Demo data (only runs if `AUTOPLANNER_SEED=1` env var is set)
 
 - **Frontend** (`frontend/`): React 19 + Vite + React Router + MSAL.js. Proxies `/api` calls to the backend.
   - `src/auth/authConfig.js` — MSAL configuration (client ID from `VITE_MICROSOFT_CLIENT_ID` env var)
   - `src/auth/AuthContext.jsx` — React auth context (login, logout, session persistence)
   - `src/auth/LoginPage.jsx` — Microsoft sign-in page
-  - `src/api.js` — API client (injects `Authorization: Bearer <token>` header, handles 401)
+  - `src/api.js` — API client (injects `Authorization: Bearer <token>` header, handles 401, blob upload helpers)
+  - `src/components/MarkdownEditor.jsx` — Markdown editor (@uiw/react-md-editor) with image paste-to-upload
   - `src/components/` — TaskList, TaskForm, PlanView, SummaryView, ReviewModal
 
 ## Authentication
@@ -76,6 +78,8 @@ Requires `frontend/.env.local` with `VITE_MICROSOFT_CLIENT_ID=<client-id>`.
 - **GitHub Actions secrets** (in `pilife/AutoPlanner`):
   - `VITE_MICROSOFT_CLIENT_ID` — baked into Docker image at build time (frontend OAuth client ID)
   - `AZURE_SQL_CONNECTION_STRING` — baked into Docker image at build time (database connection)
+  - `AZURE_STORAGE_ACCOUNT` — Azure Blob Storage account name (for image uploads)
+  - `AZURE_STORAGE_KEY` — Azure Blob Storage access key (for SAS token signing)
   - `AZURE_WEBAPP_WEBHOOK_URL` — triggers Azure to pull new image after push
 - **Azure App Service config**:
   - System-assigned Managed Identity enabled (for Entra auth to Azure SQL)
@@ -90,8 +94,14 @@ Requires `frontend/.env.local` with `VITE_MICROSOFT_CLIENT_ID=<client-id>`.
 | POST | `/api/auth/login` | Exchange Microsoft token for session (`{provider, token, id_token}`) |
 | POST | `/api/auth/logout` | Delete session |
 | GET | `/api/auth/me` | Get current user info |
+| GET | `/api/version` | Build commit hash and timestamp |
 
 ### Data (require `Authorization: Bearer <session_token>`)
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/upload/sas` | Get SAS URLs for blob upload (`{filename, content_type}` → `{upload_url, blob_url}`) |
+
+### Tasks & Plans (require `Authorization: Bearer <session_token>`)
 | Method | Path | Description |
 |--------|------|-------------|
 | GET/POST | `/api/tasks` | List (with `?status=`/`?category=` filters) / Create |
@@ -116,3 +126,14 @@ Requires `frontend/.env.local` with `VITE_MICROSOFT_CLIENT_ID=<client-id>`.
 - SQLite database file `autoplanner.db` is created in the working directory
 - CORS allows `Authorization` header; permissive (`*`) origin for development
 - All data is scoped to the authenticated user — no cross-user data access
+- Task descriptions support markdown with embedded images (uploaded to Azure Blob Storage)
+- Logging via spdlog: configurable with `LOG_LEVEL` (debug/info/warn/error) and `LOG_FILE` env vars
+- `/api/version` returns build commit hash and timestamp for deployment verification
+
+## Azure Blob Storage
+- **Storage account**: configured via `AZURE_STORAGE_ACCOUNT` env var
+- **Access key**: configured via `AZURE_STORAGE_KEY` env var (used for SAS token signing)
+- **Container**: `images` (private access)
+- **Blob path**: `user-{userId}/{uuid}.{ext}`
+- **Upload flow**: backend generates write SAS (5 min) + read SAS (1 year), frontend uploads directly to blob via PUT
+- **CORS on storage account**: allow PUT from app origins with `Content-Type, x-ms-blob-type` headers
