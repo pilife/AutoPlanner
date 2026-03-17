@@ -1,9 +1,34 @@
 #ifdef HAS_AZURE_SQL
 
 #include "azuresql_backend.h"
+#include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <cstring>
 #include <algorithm>
+
+// Truncate long strings for logging
+static std::string truncate(const std::string& s, size_t maxLen = 80) {
+    if (s.size() <= maxLen) return s;
+    return s.substr(0, maxLen) + "...(" + std::to_string(s.size()) + " chars)";
+}
+
+static std::string paramsToString(const std::vector<Param>& params) {
+    std::string result;
+    for (size_t i = 0; i < params.size(); i++) {
+        if (i > 0) result += ", ";
+        result += "?" + std::to_string(i + 1) + "=";
+        switch (params[i].type) {
+            case Param::INT:
+                result += std::to_string(params[i].intVal);
+                break;
+            case Param::TEXT:
+                result += "'" + truncate(params[i].textVal, 50) + "'[" +
+                          std::to_string(params[i].textVal.size()) + "B]";
+                break;
+        }
+    }
+    return result;
+}
 
 AzureSqlBackend::AzureSqlBackend(const std::string& connectionString) {
     SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &henv_);
@@ -19,7 +44,6 @@ AzureSqlBackend::AzureSqlBackend(const std::string& connectionString) {
         throw std::runtime_error("ODBC connection failed: " + err);
     }
 
-    // Enable autocommit by default
     SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT,
                       reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), 0);
 }
@@ -64,8 +88,6 @@ SQLHSTMT AzureSqlBackend::prepareAndBind(const std::string& sql, const std::vect
         SQLUSMALLINT idx = static_cast<SQLUSMALLINT>(i + 1);
         switch (params[i].type) {
             case Param::INT: {
-                // Need stable storage for the integer value during execution
-                // We use SQLBindParameter with SQL_PARAM_INPUT
                 auto* intPtr = const_cast<int*>(&params[i].intVal);
                 SQLBindParameter(hstmt, idx, SQL_PARAM_INPUT, SQL_C_SLONG,
                                 SQL_INTEGER, 0, 0, intPtr, 0, nullptr);
@@ -86,14 +108,15 @@ SQLHSTMT AzureSqlBackend::prepareAndBind(const std::string& sql, const std::vect
 }
 
 void AzureSqlBackend::exec(const std::string& sql) {
+    spdlog::debug("[SQL] exec: {}", truncate(sql, 120));
     SQLHSTMT hstmt = SQL_NULL_HSTMT;
     SQLAllocHandle(SQL_HANDLE_STMT, hdbc_, &hstmt);
     SQLRETURN ret = SQLExecDirect(hstmt,
         reinterpret_cast<SQLCHAR*>(const_cast<char*>(sql.c_str())), SQL_NTS);
-    // Allow SQL_NO_DATA (e.g., for IF NOT EXISTS that does nothing)
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
         std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
         SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+        spdlog::error("[SQL] exec failed: {} | sql={}", err, truncate(sql, 200));
         throw std::runtime_error("ODBC exec error: " + err);
     }
     SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
@@ -101,9 +124,15 @@ void AzureSqlBackend::exec(const std::string& sql) {
 
 void AzureSqlBackend::query(const std::string& sql, const std::vector<Param>& params,
                              RowCallback callback) {
+    spdlog::debug("[SQL] query: {} | params: {}", truncate(sql, 120), paramsToString(params));
     SQLHSTMT hstmt = prepareAndBind(sql, params);
     SQLRETURN ret = SQLExecute(hstmt);
-    checkReturn(ret, SQL_HANDLE_STMT, hstmt, "query execute");
+    if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
+        std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
+        SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+        spdlog::error("[SQL] query failed: {} | sql={} | params: {}", err, truncate(sql, 200), paramsToString(params));
+        throw std::runtime_error("ODBC query execute: " + err);
+    }
 
     OdbcRow row(hstmt);
     while (SQLFetch(hstmt) == SQL_SUCCESS) {
@@ -113,9 +142,15 @@ void AzureSqlBackend::query(const std::string& sql, const std::vector<Param>& pa
 }
 
 int AzureSqlBackend::execute(const std::string& sql, const std::vector<Param>& params) {
+    spdlog::debug("[SQL] execute: {} | params: {}", truncate(sql, 120), paramsToString(params));
     SQLHSTMT hstmt = prepareAndBind(sql, params);
     SQLRETURN ret = SQLExecute(hstmt);
-    checkReturn(ret, SQL_HANDLE_STMT, hstmt, "execute");
+    if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
+        std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
+        SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+        spdlog::error("[SQL] execute failed: {} | sql={} | params: {}", err, truncate(sql, 200), paramsToString(params));
+        throw std::runtime_error("ODBC execute: " + err);
+    }
 
     SQLLEN rowCount = 0;
     SQLRowCount(hstmt, &rowCount);
@@ -124,31 +159,40 @@ int AzureSqlBackend::execute(const std::string& sql, const std::vector<Param>& p
 }
 
 int AzureSqlBackend::insertReturningId(const std::string& sql, const std::vector<Param>& params) {
-    // The SQL should contain OUTPUT INSERTED.id for Azure SQL
+    spdlog::debug("[SQL] insert: {} | params: {}", truncate(sql, 120), paramsToString(params));
     SQLHSTMT hstmt = prepareAndBind(sql, params);
     SQLRETURN ret = SQLExecute(hstmt);
-    checkReturn(ret, SQL_HANDLE_STMT, hstmt, "insertReturningId");
+    if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
+        std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
+        SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+        spdlog::error("[SQL] insert failed: {} | sql={} | params: {}", err, truncate(sql, 200), paramsToString(params));
+        throw std::runtime_error("ODBC insertReturningId: " + err);
+    }
 
     int id = 0;
     if (SQLFetch(hstmt) == SQL_SUCCESS) {
         SQLGetData(hstmt, 1, SQL_C_SLONG, &id, sizeof(id), nullptr);
     }
     SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+    spdlog::debug("[SQL] insert returned id={}", id);
     return id;
 }
 
 void AzureSqlBackend::beginTransaction() {
+    spdlog::debug("[SQL] BEGIN TRANSACTION");
     SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT,
                       reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_OFF), 0);
 }
 
 void AzureSqlBackend::commit() {
+    spdlog::debug("[SQL] COMMIT");
     SQLEndTran(SQL_HANDLE_DBC, hdbc_, SQL_COMMIT);
     SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT,
                       reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), 0);
 }
 
 void AzureSqlBackend::rollback() {
+    spdlog::warn("[SQL] ROLLBACK");
     SQLEndTran(SQL_HANDLE_DBC, hdbc_, SQL_ROLLBACK);
     SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT,
                       reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), 0);
