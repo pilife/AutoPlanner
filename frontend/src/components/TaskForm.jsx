@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { toMinutes, fromMinutes, bestUnit } from '../helpers';
+import MarkdownEditor from './MarkdownEditor';
 
 export default function TaskForm({ task, allTasks = [], onSave, onCancel }) {
   const initUnit = bestUnit(task.estimated_minutes || 30);
@@ -79,7 +80,10 @@ export default function TaskForm({ task, allTasks = [], onSave, onCancel }) {
           </div>
           <div className="form-group">
             <label>Description</label>
-            <textarea value={form.description} onChange={set('description')} />
+            <MarkdownEditor
+              value={form.description}
+              onChange={(val) => setForm(f => ({ ...f, description: val || '' }))}
+            />
           </div>
           <div className="form-row">
             <div className="form-group">

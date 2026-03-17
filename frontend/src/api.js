@@ -58,3 +58,16 @@ export const getAllSummaries = () => request('/summaries');
 
 // Categories
 export const getCategories = () => request('/categories');
+
+// Blob upload
+export const getUploadSas = (filename, contentType) =>
+  request('/upload/sas', { method: 'POST', body: JSON.stringify({ filename, content_type: contentType }) });
+
+export async function uploadToBlob(uploadUrl, file) {
+  const res = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': file.type },
+    body: file,
+  });
+  if (!res.ok) throw new Error('Blob upload failed: ' + res.status);
+}

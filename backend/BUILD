@@ -6,6 +6,7 @@ cc_binary(
         "src/auth.h",
         "src/azuresql_backend.cpp",
         "src/azuresql_backend.h",
+        "src/blob_storage.h",
         "src/database.cpp",
         "src/database.h",
         "src/db_backend.h",

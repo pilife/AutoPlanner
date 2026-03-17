@@ -1,8 +1,10 @@
 #include "routes.h"
 #include "auth.h"
+#include "blob_storage.h"
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <ctime>
+#include <cstdlib>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -154,6 +156,51 @@ void registerRoutes(httplib::Server& server, Database& db) {
         }
         jsonResponse(res, 200, *user);
     });
+
+    // ── Blob Upload SAS ────────────────────────────────────────────────
+
+    server.Post("/api/upload/sas", requireAuth(db,
+        [&](const httplib::Request& req, httplib::Response& res, int userId) {
+        try {
+            const char* account = std::getenv("AZURE_STORAGE_ACCOUNT");
+            const char* key = std::getenv("AZURE_STORAGE_KEY");
+            if (!account || !key || std::strlen(account) == 0 || std::strlen(key) == 0) {
+                errorResponse(res, 500, "Blob storage not configured");
+                return;
+            }
+
+            auto body = json::parse(req.body);
+            std::string filename = body.value("filename", "image.png");
+            std::string contentType = body.value("content_type", "image/png");
+
+            std::string ext = blob_storage::getExtension(filename);
+            std::string uuid = blob_storage::generateUuid();
+            std::string blobPath = "user-" + std::to_string(userId) + "/" + uuid + "." + ext;
+            std::string container = "images";
+
+            // Upload SAS: create+write, 5 min
+            std::string uploadUrl = blob_storage::generateBlobSasUrl(
+                account, key, container, blobPath, "cw", 5);
+            // Read SAS: read, 365 days
+            std::string blobUrl = blob_storage::generateBlobSasUrl(
+                account, key, container, blobPath, "r", 365 * 24 * 60);
+
+            if (uploadUrl.empty() || blobUrl.empty()) {
+                errorResponse(res, 500, "Failed to generate SAS token");
+                return;
+            }
+
+            spdlog::info("[BLOB] SAS generated for user={} blob={}", userId, blobPath);
+            jsonResponse(res, 200, {
+                {"upload_url", uploadUrl},
+                {"blob_url", blobUrl},
+                {"content_type", contentType}
+            });
+        } catch (const std::exception& e) {
+            spdlog::error("[BLOB] SAS generation failed: {}", e.what());
+            errorResponse(res, 400, e.what());
+        }
+    }));
 
     // ── Tasks ──────────────────────────────────────────────────────────
 

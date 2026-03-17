@@ -35,6 +35,8 @@ jobs:
           build-args: |
             VITE_MICROSOFT_CLIENT_ID=${{ secrets.VITE_MICROSOFT_CLIENT_ID }}
             AZURE_SQL_CONNECTION_STRING=${{ secrets.AZURE_SQL_CONNECTION_STRING }}
+            AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
+            AZURE_STORAGE_KEY=${{ secrets.AZURE_STORAGE_KEY }}
             BUILD_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
