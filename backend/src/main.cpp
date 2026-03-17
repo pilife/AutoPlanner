@@ -40,8 +40,14 @@ static void initLogging() {
     spdlog::flush_every(std::chrono::seconds(3));
 }
 
+#ifndef BUILD_COMMIT
+#define BUILD_COMMIT "dev"
+#endif
+
 int main(int argc, char* argv[]) {
     initLogging();
+
+    spdlog::info("AutoPlanner commit={} built={}", BUILD_COMMIT, __DATE__ " " __TIME__);
 
     int port = 8080;
     if (argc > 1) {
