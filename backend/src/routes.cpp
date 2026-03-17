@@ -78,8 +78,11 @@ void registerRoutes(httplib::Server& server, Database& db) {
     // ── Version (unauthenticated) ─────────────────────────────────────
 
     server.Get("/api/version", [](const httplib::Request&, httplib::Response& res) {
+#ifndef BUILD_COMMIT
+#define BUILD_COMMIT "dev"
+#endif
         jsonResponse(res, 200, {
-            {"version", "0.2.0"},
+            {"commit", BUILD_COMMIT},
             {"build_time", __DATE__ " " __TIME__}
         });
     });

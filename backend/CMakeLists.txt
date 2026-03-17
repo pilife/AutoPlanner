@@ -55,6 +55,9 @@ add_executable(autoplanner
 )
 
 target_compile_definitions(autoplanner PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+if(BUILD_COMMIT)
+    target_compile_definitions(autoplanner PRIVATE BUILD_COMMIT="${BUILD_COMMIT}")
+endif()
 target_include_directories(autoplanner PRIVATE src)
 target_link_libraries(autoplanner PRIVATE httplib::httplib nlohmann_json::nlohmann_json spdlog::spdlog sqlite3_lib OpenSSL::SSL OpenSSL::Crypto pthread)
 

@@ -17,7 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app/backend
 COPY backend/CMakeLists.txt ./
 COPY backend/src/ ./src/
+ARG BUILD_COMMIT="unknown"
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DUSE_AZURE_SQL=ON \
+    -DBUILD_COMMIT=${BUILD_COMMIT} \
     && cmake --build build --config Release -j$(nproc)
 
 # Stage 3: Runtime
