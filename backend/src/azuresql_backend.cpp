@@ -30,13 +30,14 @@ static std::string paramsToString(const std::vector<Param>& params) {
     return result;
 }
 
-AzureSqlBackend::AzureSqlBackend(const std::string& connectionString) {
+AzureSqlBackend::AzureSqlBackend(const std::string& connectionString)
+    : connStr_(connectionString) {
     SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &henv_);
     SQLSetEnvAttr(henv_, SQL_ATTR_ODBC_VERSION, reinterpret_cast<void*>(SQL_OV_ODBC3), 0);
     SQLAllocHandle(SQL_HANDLE_DBC, henv_, &hdbc_);
 
     SQLRETURN ret = SQLDriverConnect(hdbc_, nullptr,
-        reinterpret_cast<SQLCHAR*>(const_cast<char*>(connectionString.c_str())),
+        reinterpret_cast<SQLCHAR*>(const_cast<char*>(connStr_.c_str())),
         SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
 
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
@@ -46,6 +47,34 @@ AzureSqlBackend::AzureSqlBackend(const std::string& connectionString) {
 
     SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT,
                       reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), 0);
+}
+
+bool AzureSqlBackend::isConnectionDead() {
+    SQLUINTEGER dead = SQL_CD_TRUE;
+    SQLGetConnectAttr(hdbc_, SQL_ATTR_CONNECTION_DEAD, &dead, 0, nullptr);
+    return dead == SQL_CD_TRUE;
+}
+
+void AzureSqlBackend::reconnect() {
+    spdlog::warn("[SQL] Connection lost, reconnecting...");
+    SQLDisconnect(hdbc_);
+    SQLFreeHandle(SQL_HANDLE_DBC, hdbc_);
+    hdbc_ = SQL_NULL_HDBC;
+    SQLAllocHandle(SQL_HANDLE_DBC, henv_, &hdbc_);
+
+    SQLRETURN ret = SQLDriverConnect(hdbc_, nullptr,
+        reinterpret_cast<SQLCHAR*>(const_cast<char*>(connStr_.c_str())),
+        SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+
+    if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
+        std::string err = getOdbcError(SQL_HANDLE_DBC, hdbc_);
+        spdlog::error("[SQL] Reconnect failed: {}", err);
+        throw std::runtime_error("ODBC reconnect failed: " + err);
+    }
+
+    SQLSetConnectAttr(hdbc_, SQL_ATTR_AUTOCOMMIT,
+                      reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), 0);
+    spdlog::info("[SQL] Reconnected successfully");
 }
 
 AzureSqlBackend::~AzureSqlBackend() {
@@ -132,60 +161,94 @@ void AzureSqlBackend::exec(const std::string& sql) {
 void AzureSqlBackend::query(const std::string& sql, const std::vector<Param>& params,
                              RowCallback callback) {
     spdlog::debug("[SQL] query: {} | params: {}", truncate(sql, 120), paramsToString(params));
-    std::vector<SQLLEN> lenBuf;
-    SQLHSTMT hstmt = prepareAndBind(sql, params, lenBuf);
-    SQLRETURN ret = SQLExecute(hstmt);
-    if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
-        std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
-        SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-        spdlog::error("[SQL] query failed: {} | sql={} | params: {}", err, truncate(sql, 200), paramsToString(params));
-        throw std::runtime_error("ODBC query execute: " + err);
-    }
 
-    OdbcRow row(hstmt);
-    while (SQLFetch(hstmt) == SQL_SUCCESS) {
-        callback(row);
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) reconnect();
+
+        std::vector<SQLLEN> lenBuf;
+        SQLHSTMT hstmt = prepareAndBind(sql, params, lenBuf);
+        SQLRETURN ret = SQLExecute(hstmt);
+
+        if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
+            std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
+            SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+            // Retry on connection errors (08xxx)
+            if (attempt == 0 && err.substr(0, 2) == "08") {
+                spdlog::warn("[SQL] Connection error, will retry: {}", err);
+                continue;
+            }
+            spdlog::error("[SQL] query failed: {} | sql={} | params: {}", err, truncate(sql, 200), paramsToString(params));
+            throw std::runtime_error("ODBC query execute: " + err);
+        }
+
+        OdbcRow row(hstmt);
+        while (SQLFetch(hstmt) == SQL_SUCCESS) {
+            callback(row);
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+        return;
     }
-    SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
 }
 
 int AzureSqlBackend::execute(const std::string& sql, const std::vector<Param>& params) {
     spdlog::debug("[SQL] execute: {} | params: {}", truncate(sql, 120), paramsToString(params));
-    std::vector<SQLLEN> lenBuf;
-    SQLHSTMT hstmt = prepareAndBind(sql, params, lenBuf);
-    SQLRETURN ret = SQLExecute(hstmt);
-    if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
-        std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
-        SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-        spdlog::error("[SQL] execute failed: {} | sql={} | params: {}", err, truncate(sql, 200), paramsToString(params));
-        throw std::runtime_error("ODBC execute: " + err);
-    }
 
-    SQLLEN rowCount = 0;
-    SQLRowCount(hstmt, &rowCount);
-    SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-    return static_cast<int>(rowCount);
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) reconnect();
+
+        std::vector<SQLLEN> lenBuf;
+        SQLHSTMT hstmt = prepareAndBind(sql, params, lenBuf);
+        SQLRETURN ret = SQLExecute(hstmt);
+
+        if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
+            std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
+            SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+            if (attempt == 0 && err.substr(0, 2) == "08") {
+                spdlog::warn("[SQL] Connection error, will retry: {}", err);
+                continue;
+            }
+            spdlog::error("[SQL] execute failed: {} | sql={} | params: {}", err, truncate(sql, 200), paramsToString(params));
+            throw std::runtime_error("ODBC execute: " + err);
+        }
+
+        SQLLEN rowCount = 0;
+        SQLRowCount(hstmt, &rowCount);
+        SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+        return static_cast<int>(rowCount);
+    }
+    return 0;
 }
 
 int AzureSqlBackend::insertReturningId(const std::string& sql, const std::vector<Param>& params) {
     spdlog::debug("[SQL] insert: {} | params: {}", truncate(sql, 120), paramsToString(params));
-    std::vector<SQLLEN> lenBuf;
-    SQLHSTMT hstmt = prepareAndBind(sql, params, lenBuf);
-    SQLRETURN ret = SQLExecute(hstmt);
-    if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
-        std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
-        SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-        spdlog::error("[SQL] insert failed: {} | sql={} | params: {}", err, truncate(sql, 200), paramsToString(params));
-        throw std::runtime_error("ODBC insertReturningId: " + err);
-    }
 
-    int id = 0;
-    if (SQLFetch(hstmt) == SQL_SUCCESS) {
-        SQLGetData(hstmt, 1, SQL_C_SLONG, &id, sizeof(id), nullptr);
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) reconnect();
+
+        std::vector<SQLLEN> lenBuf;
+        SQLHSTMT hstmt = prepareAndBind(sql, params, lenBuf);
+        SQLRETURN ret = SQLExecute(hstmt);
+
+        if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_NO_DATA) {
+            std::string err = getOdbcError(SQL_HANDLE_STMT, hstmt);
+            SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+            if (attempt == 0 && err.substr(0, 2) == "08") {
+                spdlog::warn("[SQL] Connection error, will retry: {}", err);
+                continue;
+            }
+            spdlog::error("[SQL] insert failed: {} | sql={} | params: {}", err, truncate(sql, 200), paramsToString(params));
+            throw std::runtime_error("ODBC insertReturningId: " + err);
+        }
+
+        int id = 0;
+        if (SQLFetch(hstmt) == SQL_SUCCESS) {
+            SQLGetData(hstmt, 1, SQL_C_SLONG, &id, sizeof(id), nullptr);
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+        spdlog::debug("[SQL] insert returned id={}", id);
+        return id;
     }
-    SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-    spdlog::debug("[SQL] insert returned id={}", id);
-    return id;
+    return 0;
 }
 
 void AzureSqlBackend::beginTransaction() {

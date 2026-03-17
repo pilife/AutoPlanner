@@ -47,13 +47,15 @@ public:
 private:
     SQLHENV henv_ = SQL_NULL_HENV;
     SQLHDBC hdbc_ = SQL_NULL_HDBC;
+    std::string connStr_;
 
-    // lenBuf must outlive the statement execution — caller owns it
     SQLHSTMT prepareAndBind(const std::string& sql, const std::vector<Param>& params,
                              std::vector<SQLLEN>& lenBuf);
     std::string getOdbcError(SQLSMALLINT handleType, SQLHANDLE handle);
     void checkReturn(SQLRETURN ret, SQLSMALLINT handleType, SQLHANDLE handle,
                      const std::string& context);
+    bool isConnectionDead();
+    void reconnect();
 };
 
 #endif // HAS_AZURE_SQL
