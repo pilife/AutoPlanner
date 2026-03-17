@@ -42,15 +42,14 @@ jobs:
       - name: Trigger Azure Web App to pull new image
         shell: python
         run: |
-          import urllib.request
+          import subprocess, sys
           url = "${{ secrets.AZURE_WEBAPP_WEBHOOK_URL }}"
-          try:
-            req = urllib.request.Request(url, method="POST")
-            resp = urllib.request.urlopen(req)
-            print(f"Webhook response: HTTP {resp.status}")
-          except urllib.error.HTTPError as e:
-            print(f"Webhook failed: HTTP {e.code}")
-            raise
-          except Exception as e:
-            print(f"Webhook error: {e}")
-            raise
+          result = subprocess.run(
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST", url],
+            capture_output=True, text=True
+          )
+          status = result.stdout.strip()
+          print(f"Webhook response: HTTP {status}")
+          if not status.startswith("2"):
+            print(f"Webhook failed")
+            sys.exit(1)
