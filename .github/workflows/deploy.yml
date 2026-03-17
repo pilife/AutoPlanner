@@ -40,12 +40,17 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Trigger Azure Web App to pull new image
+        shell: python
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${{ secrets.AZURE_WEBAPP_WEBHOOK_URL }}")
-          echo "Webhook response: HTTP $STATUS"
-          if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
-            echo "Webhook triggered successfully"
-          else
-            echo "Webhook failed with HTTP $STATUS"
-            exit 1
-          fi
+          import urllib.request
+          url = "${{ secrets.AZURE_WEBAPP_WEBHOOK_URL }}"
+          try:
+            req = urllib.request.Request(url, method="POST")
+            resp = urllib.request.urlopen(req)
+            print(f"Webhook response: HTTP {resp.status}")
+          except urllib.error.HTTPError as e:
+            print(f"Webhook failed: HTTP {e.code}")
+            raise
+          except Exception as e:
+            print(f"Webhook error: {e}")
+            raise
