@@ -40,4 +40,12 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Trigger Azure Web App to pull new image
-        run: curl -sf -X POST "${{ secrets.AZURE_WEBAPP_WEBHOOK_URL }}" || echo "Webhook not configured yet"
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${{ secrets.AZURE_WEBAPP_WEBHOOK_URL }}")
+          echo "Webhook response: HTTP $STATUS"
+          if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 300 ]; then
+            echo "Webhook triggered successfully"
+          else
+            echo "Webhook failed with HTTP $STATUS"
+            exit 1
+          fi
