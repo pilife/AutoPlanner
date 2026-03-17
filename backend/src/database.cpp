@@ -41,22 +41,22 @@ void Database::initTables() {
             IF OBJECT_ID('dbo.users', 'U') IS NULL
             CREATE TABLE dbo.users (
                 id          INT IDENTITY(1,1) PRIMARY KEY,
-                provider    NVARCHAR(50)  NOT NULL,
-                provider_id NVARCHAR(255) NOT NULL,
-                email       NVARCHAR(320) NOT NULL,
-                name        NVARCHAR(255) DEFAULT '',
-                avatar_url  NVARCHAR(2048) DEFAULT '',
-                created_at  NVARCHAR(30)  NOT NULL,
+                provider    NVARCHAR(100)  NOT NULL,
+                provider_id NVARCHAR(500) NOT NULL,
+                email       NVARCHAR(500) NOT NULL,
+                name        NVARCHAR(500) DEFAULT '',
+                avatar_url  NVARCHAR(MAX) DEFAULT '',
+                created_at  NVARCHAR(50)  NOT NULL,
                 CONSTRAINT UQ_users_provider UNIQUE(provider, provider_id)
             )
         )");
         backend_->exec(R"(
             IF OBJECT_ID('dbo.sessions', 'U') IS NULL
             CREATE TABLE dbo.sessions (
-                token      NVARCHAR(64) PRIMARY KEY,
+                token      NVARCHAR(128) PRIMARY KEY,
                 user_id    INT NOT NULL,
-                created_at NVARCHAR(30) NOT NULL,
-                expires_at NVARCHAR(30) NOT NULL,
+                created_at NVARCHAR(50) NOT NULL,
+                expires_at NVARCHAR(50) NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES dbo.users(id) ON DELETE CASCADE
             )
         )");
@@ -74,8 +74,8 @@ void Database::initTables() {
                 category          NVARCHAR(100) DEFAULT '',
                 status            NVARCHAR(20)  DEFAULT 'todo',
                 due_date          NVARCHAR(10)  DEFAULT '',
-                created_at        NVARCHAR(30) NOT NULL,
-                updated_at        NVARCHAR(30) NOT NULL
+                created_at        NVARCHAR(50) NOT NULL,
+                updated_at        NVARCHAR(50) NOT NULL
             )
         )");
         backend_->exec(R"(
@@ -87,7 +87,7 @@ void Database::initTables() {
                 date       NVARCHAR(10) NOT NULL,
                 items_json NVARCHAR(MAX) DEFAULT '[]',
                 reviewed   BIT DEFAULT 0,
-                created_at NVARCHAR(30) NOT NULL,
+                created_at NVARCHAR(50) NOT NULL,
                 CONSTRAINT UQ_plans_user_type_date UNIQUE(user_id, type, date)
             )
         )");
@@ -106,7 +106,7 @@ void Database::initTables() {
                 category_breakdown NVARCHAR(MAX) DEFAULT '{}',
                 completed_tasks    NVARCHAR(MAX) DEFAULT '[]',
                 incomplete_tasks   NVARCHAR(MAX) DEFAULT '[]',
-                created_at         NVARCHAR(30) NOT NULL,
+                created_at         NVARCHAR(50) NOT NULL,
                 CONSTRAINT UQ_summaries_user_week UNIQUE(user_id, week_date)
             )
         )");
@@ -116,8 +116,8 @@ void Database::initTables() {
                 id         INT IDENTITY(1,1) PRIMARY KEY,
                 user_id    INT NOT NULL DEFAULT 0,
                 task_id    INT NOT NULL,
-                start_time NVARCHAR(30) NOT NULL,
-                end_time   NVARCHAR(30) DEFAULT '',
+                start_time NVARCHAR(50) NOT NULL,
+                end_time   NVARCHAR(50) DEFAULT '',
                 notes      NVARCHAR(MAX) DEFAULT '',
                 FOREIGN KEY (task_id) REFERENCES dbo.tasks(id) ON DELETE CASCADE
             )
