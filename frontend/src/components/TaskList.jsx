@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import MDEditor from '@uiw/react-md-editor';
 import { getTasks, createTask, updateTask, deleteTask } from '../api';
 import TaskForm from './TaskForm';
 import { formatDuration } from '../helpers';
@@ -22,9 +21,8 @@ function buildTree(tasks) {
   return roots;
 }
 
-function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, expanded, onToggleExpand, descExpanded, onToggleDesc }) {
+function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, expanded, onToggleExpand }) {
   const hasChildren = task.children && task.children.length > 0;
-  const hasDesc = task.description && task.description.trim().length > 0;
 
   return (
     <>
@@ -41,14 +39,7 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
             ) : (
               <span style={{ width: 16, display: 'inline-block' }} />
             )}
-            <span
-              style={{ cursor: hasDesc ? 'pointer' : 'default' }}
-              onClick={() => hasDesc && onToggleDesc(task.id)}
-              title={hasDesc ? 'Click to show description' : ''}
-            >
-              {task.title}
-              {hasDesc && <span style={{ color: '#b2bec3', marginLeft: 4, fontSize: '0.75rem' }}>...</span>}
-            </span>
+            <span>{task.title}</span>
           </div>
         </td>
         <td>{task.category || '-'}</td>
@@ -72,15 +63,6 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
           </div>
         </td>
       </tr>
-      {descExpanded && hasDesc && (
-        <tr>
-          <td colSpan={8} style={{ paddingLeft: 36 + depth * 24, paddingTop: 0, paddingBottom: 12, borderBottom: '1px solid #eee' }}>
-            <div data-color-mode="light" className="task-description-preview">
-              <MDEditor.Markdown source={task.description} />
-            </div>
-          </td>
-        </tr>
-      )}
       {hasChildren && expanded && task.children.map(child => (
         <TaskRow
           key={child.id}
@@ -92,8 +74,6 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
           onAddChild={onAddChild}
           expanded={expanded}
           onToggleExpand={onToggleExpand}
-          descExpanded={descExpanded}
-          onToggleDesc={onToggleDesc}
         />
       ))}
     </>
@@ -102,7 +82,6 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
 
 function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild }) {
   const [expandedIds, setExpandedIds] = useState(new Set());
-  const [descExpandedIds, setDescExpandedIds] = useState(new Set());
 
   // Auto-expand all nodes that have children on initial load
   useEffect(() => {
@@ -128,14 +107,6 @@ function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild
     });
   };
 
-  const toggleDesc = (id) => {
-    setDescExpandedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
 
   return (
     <div className="card">
@@ -164,8 +135,6 @@ function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild
               onAddChild={onAddChild}
               expanded={expandedIds.has(t.id)}
               onToggleExpand={toggleExpand}
-              descExpanded={descExpandedIds.has(t.id)}
-              onToggleDesc={toggleDesc}
             />
           ))}
         </tbody>
