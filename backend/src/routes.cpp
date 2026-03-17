@@ -75,6 +75,15 @@ static std::vector<std::string> getRemainingWeekDays(const std::string& monday,
 
 void registerRoutes(httplib::Server& server, Database& db) {
 
+    // ── Version (unauthenticated) ─────────────────────────────────────
+
+    server.Get("/api/version", [](const httplib::Request&, httplib::Response& res) {
+        jsonResponse(res, 200, {
+            {"version", "0.2.0"},
+            {"build_time", __DATE__ " " __TIME__}
+        });
+    });
+
     // ── Auth (unauthenticated) ────────────────────────────────────────
 
     server.Post("/api/auth/login", [&](const httplib::Request& req, httplib::Response& res) {
