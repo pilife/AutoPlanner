@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import MDEditor from '@uiw/react-md-editor';
-import { getPlan, savePlan, generateWeeklyPlan, generateDailyPlans, getTasks, getUnreviewedPlans, updateTask } from '../api';
+import { getPlan, savePlan, generateWeeklyPlan, generateDailyPlans, getTasks, getUnreviewedPlans, updateTask, createTask } from '../api';
 import { formatDuration, getTaskPath } from '../helpers';
 import ReviewModal from './ReviewModal';
 
@@ -236,6 +236,8 @@ export default function PlanView() {
   const [showAddTask, setShowAddTask] = useState(false);
   const [unreviewedPlans, setUnreviewedPlans] = useState([]);
   const [selectedTask, setSelectedTask] = useState(null);
+  const [splittingTaskId, setSplittingTaskId] = useState(null);
+  const [splitNames, setSplitNames] = useState(['', '']);
 
   const monday = getMondayOfWeek(date);
 
@@ -386,6 +388,88 @@ export default function PlanView() {
     try {
       await savePlan({ ...plan, items: [...plan.items, newItem] });
       setShowAddTask(false);
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const handleSplitTask = async (taskId) => {
+    const names = splitNames.map(n => n.trim()).filter(Boolean);
+    if (names.length === 0) return;
+    const parent = taskMap[taskId];
+    if (!parent) return;
+
+    try {
+      // Create child tasks inheriting parent properties
+      const children = [];
+      for (const name of names) {
+        const child = await createTask({
+          parent_id: taskId,
+          title: name,
+          priority: parent.priority,
+          category: parent.category,
+          status: parent.status,
+          estimated_minutes: parent.estimated_minutes,
+          due_date: parent.due_date || '',
+        });
+        children.push(child);
+      }
+
+      // Replace parent in daily plan with children
+      if (plan) {
+        const newItems = [];
+        for (const item of plan.items) {
+          if (item.task_id === taskId) {
+            for (const child of children) {
+              newItems.push({ task_id: child.id, scheduled_time: item.scheduled_time, duration_minutes: item.duration_minutes });
+            }
+          } else {
+            newItems.push(item);
+          }
+        }
+        await savePlan({ ...plan, items: newItems });
+      }
+
+      // Also replace in weekly plan if present
+      const weeklyPlan = await getPlan('weekly', date);
+      if (weeklyPlan && weeklyPlan.id) {
+        const hasTask = weeklyPlan.items.some(it => it.task_id === taskId);
+        if (hasTask) {
+          const newWeeklyItems = [];
+          for (const item of weeklyPlan.items) {
+            if (item.task_id === taskId) {
+              for (const child of children) {
+                newWeeklyItems.push({ task_id: child.id, scheduled_time: '', duration_minutes: item.duration_minutes });
+              }
+            } else {
+              newWeeklyItems.push(item);
+            }
+          }
+          await savePlan({ ...weeklyPlan, items: newWeeklyItems });
+        }
+      }
+
+      setSplittingTaskId(null);
+      setSplitNames(['', '']);
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const handleRemoveFromWeek = async (taskId) => {
+    try {
+      const weeklyPlan = await getPlan('weekly', date);
+      if (weeklyPlan && weeklyPlan.id) {
+        const newItems = weeklyPlan.items.filter(it => it.task_id !== taskId);
+        await savePlan({ ...weeklyPlan, items: newItems });
+      }
+      // Also remove from current daily plan
+      if (plan) {
+        const newItems = plan.items.filter(it => it.task_id !== taskId);
+        await savePlan({ ...plan, items: newItems });
+      }
       load();
     } catch (e) {
       setError(e.message);
@@ -613,29 +697,84 @@ export default function PlanView() {
                     const task = taskMap[item.task_id];
                     const isDone = task?.status === 'done';
                     const isLeafRoot = group.items.length === 1 && item.task_id === group.rootId;
+                    const isSplitting = splittingTaskId === item.task_id;
                     return (
-                      <div key={item.task_id} className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}>
-                        <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => task && setSelectedTask(task)}>
-                          {!isLeafRoot && (
-                            <div style={{ fontSize: '0.75rem', color: '#999' }}>
-                              {getTaskPath(item.task_id, taskMap)}
-                            </div>
-                          )}
-                          <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
-                            {task ? task.title : `Task #${item.task_id}`}
-                          </span>
-                          {task && <span style={{ fontSize: '0.8rem', color: '#636e72', marginLeft: 8 }}>{task.category}</span>}
+                      <div key={item.task_id}>
+                        <div className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}>
+                          <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => task && setSelectedTask(task)}>
+                            {!isLeafRoot && (
+                              <div style={{ fontSize: '0.75rem', color: '#999' }}>
+                                {getTaskPath(item.task_id, taskMap)}
+                              </div>
+                            )}
+                            <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
+                              {task ? task.title : `Task #${item.task_id}`}
+                            </span>
+                            {task && <span style={{ fontSize: '0.8rem', color: '#636e72', marginLeft: 8 }}>{task.category}</span>}
+                          </div>
+                          <span className="duration">{formatDuration(item.duration_minutes)}</span>
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <button
+                              className={`btn btn-sm ${isDone ? '' : 'btn-primary'}`}
+                              onClick={async () => {
+                                await updateTask(item.task_id, { status: isDone ? 'todo' : 'done' });
+                                load();
+                              }}
+                            >
+                              {isDone ? 'Undo' : 'Done'}
+                            </button>
+                            <button
+                              className="btn btn-sm"
+                              title="Split into subtasks"
+                              onClick={() => {
+                                if (isSplitting) { setSplittingTaskId(null); setSplitNames(['', '']); }
+                                else { setSplittingTaskId(item.task_id); setSplitNames(['', '']); }
+                              }}
+                            >
+                              Split
+                            </button>
+                            <button
+                              className="btn btn-sm btn-danger"
+                              title="Remove from weekly and daily plan"
+                              onClick={() => handleRemoveFromWeek(item.task_id)}
+                            >
+                              Remove
+                            </button>
+                          </div>
                         </div>
-                        <span className="duration">{formatDuration(item.duration_minutes)}</span>
-                        <button
-                          className={`btn btn-sm ${isDone ? '' : 'btn-primary'}`}
-                          onClick={async () => {
-                            await updateTask(item.task_id, { status: isDone ? 'todo' : 'done' });
-                            load();
-                          }}
-                        >
-                          {isDone ? 'Undo' : 'Done'}
-                        </button>
+                        {isSplitting && (
+                          <div style={{ padding: '8px 12px', background: '#f8f9fa', borderRadius: 6, margin: '4px 0 8px' }}>
+                            <div style={{ fontSize: '0.8rem', color: '#636e72', marginBottom: 6 }}>
+                              Split "{task?.title}" into subtasks:
+                            </div>
+                            {splitNames.map((name, idx) => (
+                              <input
+                                key={idx}
+                                type="text"
+                                placeholder={`Subtask ${idx + 1}`}
+                                value={name}
+                                onChange={e => {
+                                  const next = [...splitNames];
+                                  next[idx] = e.target.value;
+                                  setSplitNames(next);
+                                }}
+                                style={{ width: '100%', padding: '4px 8px', marginBottom: 4, borderRadius: 4, border: '1px solid #dfe6e9', fontSize: '0.85rem' }}
+                                autoFocus={idx === 0}
+                              />
+                            ))}
+                            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                              <button className="btn btn-sm" onClick={() => setSplitNames([...splitNames, ''])}>+ Add</button>
+                              <button
+                                className="btn btn-sm btn-primary"
+                                disabled={splitNames.every(n => !n.trim())}
+                                onClick={() => handleSplitTask(item.task_id)}
+                              >
+                                Split
+                              </button>
+                              <button className="btn btn-sm" onClick={() => { setSplittingTaskId(null); setSplitNames(['', '']); }}>Cancel</button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
