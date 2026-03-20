@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
+import MDEditor from '@uiw/react-md-editor';
 import { getPlan, savePlan, generateWeeklyPlan, generateDailyPlans, getTasks, getUnreviewedPlans, updateTask } from '../api';
 import { formatDuration, getTaskPath } from '../helpers';
 import ReviewModal from './ReviewModal';
@@ -27,6 +28,35 @@ function getWeekDays(monday) {
 }
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
+const PRIORITY_LABELS = { 1: 'Critical', 2: 'High', 3: 'Medium', 4: 'Low', 5: 'Minimal' };
+
+function TaskDetailModal({ task, taskMap, onClose }) {
+  if (!task) return null;
+  const path = task.parent_id ? getTaskPath(task.id, taskMap) : null;
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 600 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+          <h3 style={{ margin: 0 }}>{task.title}</h3>
+          <button className="btn btn-sm" onClick={onClose} style={{ fontSize: '1.1rem', lineHeight: 1 }}>&times;</button>
+        </div>
+        {path && <div style={{ fontSize: '0.8rem', color: '#636e72', marginBottom: 12 }}>{path}</div>}
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16, fontSize: '0.85rem' }}>
+          <span><strong>Priority:</strong> {PRIORITY_LABELS[task.priority] || task.priority}</span>
+          {task.category && <span><strong>Category:</strong> {task.category}</span>}
+          <span><strong>Status:</strong> {task.status}</span>
+          {task.estimated_minutes > 0 && <span><strong>Estimate:</strong> {formatDuration(task.estimated_minutes)}</span>}
+        </div>
+        {task.description && (
+          <div data-color-mode="light" style={{ maxHeight: 400, overflow: 'auto' }}>
+            <MDEditor.Markdown source={task.description} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // Build hierarchy tree from flat plan items
 function buildPlanTree(items, taskMap) {
@@ -58,10 +88,13 @@ function buildPlanTree(items, taskMap) {
   }));
 }
 
-function DailyPlansDragGrid({ dailyPlans, taskMap, onPlansUpdated }) {
-  const [dragItem, setDragItem] = useState(null); // { fromDate, itemIndex, item }
+function DailyPlansDragGrid({ dailyPlans, taskMap, onPlansUpdated, onTaskClick }) {
+  const [localPlans, setLocalPlans] = useState(dailyPlans);
+  const [dragItem, setDragItem] = useState(null);
   const [dragOverDate, setDragOverDate] = useState(null);
   const today = todayStr();
+
+  useEffect(() => { setLocalPlans(dailyPlans); }, [dailyPlans]);
 
   const handleDragStart = (e, date, itemIndex, item) => {
     setDragItem({ fromDate: date, itemIndex, item });
@@ -69,7 +102,7 @@ function DailyPlansDragGrid({ dailyPlans, taskMap, onPlansUpdated }) {
   };
 
   const handleDragOver = (e, date) => {
-    if (date < today) return; // can't drop on past days
+    if (date < today) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     setDragOverDate(date);
@@ -84,27 +117,31 @@ function DailyPlansDragGrid({ dailyPlans, taskMap, onPlansUpdated }) {
     setDragOverDate(null);
     if (!dragItem || dragItem.fromDate === toDate || toDate < today) return;
 
-    const fromPlan = dailyPlans.find(dp => dp.date === dragItem.fromDate)?.plan;
-    const toPlan = dailyPlans.find(dp => dp.date === toDate)?.plan;
+    const fromDate = dragItem.fromDate;
+    const fromPlan = localPlans.find(dp => dp.date === fromDate)?.plan;
+    const toPlan = localPlans.find(dp => dp.date === toDate)?.plan;
     if (!fromPlan) return;
 
-    // Remove from source
     const newFromItems = fromPlan.items.filter((_, i) => i !== dragItem.itemIndex);
-    // Add to target
     const newToItems = [...(toPlan?.items || []), dragItem.item];
 
+    // Optimistic update
+    setLocalPlans(prev => prev.map(dp => {
+      if (dp.date === fromDate) return { ...dp, plan: { ...fromPlan, items: newFromItems } };
+      if (dp.date === toDate) return { ...dp, plan: { ...(toPlan || { type: 'daily', date: toDate }), items: newToItems } };
+      return dp;
+    }));
+
+    setDragItem(null);
+
+    // Save in background
     try {
       await savePlan({ ...fromPlan, items: newFromItems });
-      if (toPlan) {
-        await savePlan({ ...toPlan, items: newToItems });
-      } else {
-        await savePlan({ type: 'daily', date: toDate, items: newToItems });
-      }
-      onPlansUpdated();
+      await savePlan(toPlan ? { ...toPlan, items: newToItems } : { type: 'daily', date: toDate, items: newToItems });
     } catch (err) {
+      setLocalPlans(dailyPlans); // revert on error
       alert('Failed to move task: ' + err.message);
     }
-    setDragItem(null);
   };
 
   const handleDragEnd = () => {
@@ -116,10 +153,10 @@ function DailyPlansDragGrid({ dailyPlans, taskMap, onPlansUpdated }) {
     <div>
       <h3 style={{ marginBottom: 16 }}>Daily Plans</h3>
       <p style={{ color: '#636e72', fontSize: '0.8rem', marginBottom: 12 }}>
-        Drag tasks between days to reschedule (past days are locked).
+        Drag tasks between days to reschedule (past days are locked). Click a task to view details.
       </p>
       <div className="daily-plans-grid">
-        {dailyPlans.map((dp, i) => {
+        {localPlans.map((dp, i) => {
           const isPast = dp.date < today;
           const isDropTarget = dragOverDate === dp.date;
 
@@ -163,8 +200,10 @@ function DailyPlansDragGrid({ dailyPlans, taskMap, onPlansUpdated }) {
                                 onDragEnd={handleDragEnd}
                               >
                                 {!isPast && <span className="drag-handle">{'\u2630'}</span>}
-                                <div style={{ flex: 1 }}>
-                                  <strong style={{ fontSize: '0.85rem' }}>{task ? task.title : `Task #${item.task_id}`}</strong>
+                                <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => task && onTaskClick(task)}>
+                                  <strong style={{ fontSize: '0.85rem' }}>
+                                    {task && task.parent_id > 0 ? getTaskPath(task.id, taskMap) : (task?.title || `Task #${item.task_id}`)}
+                                  </strong>
                                 </div>
                                 <span className="duration">{formatDuration(item.duration_minutes)}</span>
                               </div>
@@ -196,6 +235,7 @@ export default function PlanView() {
   const [error, setError] = useState('');
   const [showAddTask, setShowAddTask] = useState(false);
   const [unreviewedPlans, setUnreviewedPlans] = useState([]);
+  const [selectedTask, setSelectedTask] = useState(null);
 
   const monday = getMondayOfWeek(date);
 
@@ -427,7 +467,7 @@ export default function PlanView() {
                               <button className="btn btn-sm" onClick={() => handleMoveItem(idx, 1)}
                                       disabled={idx === plan.items.length - 1}>{'\u25BC'}</button>
                             </div>
-                            <div style={{ flex: 1 }}>
+                            <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => task && setSelectedTask(task)}>
                               {!isLeafRoot && (
                                 <div style={{ fontSize: '0.75rem', color: '#999' }}>
                                   {getTaskPath(item.task_id, taskMap)}
@@ -497,10 +537,12 @@ export default function PlanView() {
                 dailyPlans={dailyPlans}
                 taskMap={taskMap}
                 onPlansUpdated={load}
+                onTaskClick={setSelectedTask}
               />
             )}
           </>
         )}
+        <TaskDetailModal task={selectedTask} taskMap={taskMap} onClose={() => setSelectedTask(null)} />
       </div>
     );
   }
@@ -573,7 +615,7 @@ export default function PlanView() {
                     const isLeafRoot = group.items.length === 1 && item.task_id === group.rootId;
                     return (
                       <div key={item.task_id} className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}>
-                        <div style={{ flex: 1 }}>
+                        <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => task && setSelectedTask(task)}>
                           {!isLeafRoot && (
                             <div style={{ fontSize: '0.75rem', color: '#999' }}>
                               {getTaskPath(item.task_id, taskMap)}
@@ -603,6 +645,7 @@ export default function PlanView() {
           })}
         </div>
       )}
+      <TaskDetailModal task={selectedTask} taskMap={taskMap} onClose={() => setSelectedTask(null)} />
     </div>
   );
 }
