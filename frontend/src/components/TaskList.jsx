@@ -162,16 +162,20 @@ function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild
 
 export default function TaskList() {
   const [tasks, setTasks] = useState([]);
-  const [filter, setFilter] = useState({ status: '', category: '' });
+  const [filter, setFilter] = useState({ status: 'not_done', category: '' });
   const [editing, setEditing] = useState(null); // null = closed, {} = new, task = edit
   const [error, setError] = useState('');
 
   const load = async () => {
     try {
-      const params = {};
-      if (filter.status) params.status = filter.status;
-      if (filter.category) params.category = filter.category;
-      setTasks(await getTasks(params));
+      const all = await getTasks();
+      if (filter.status === 'done') {
+        setTasks(all.filter(t => t.status === 'done'));
+      } else if (filter.status === 'not_done') {
+        setTasks(all.filter(t => t.status !== 'done'));
+      } else {
+        setTasks(all);
+      }
     } catch (e) {
       setError(e.message);
     }
@@ -226,9 +230,8 @@ export default function TaskList() {
 
       <div className="filters">
         <select value={filter.status} onChange={e => setFilter(f => ({ ...f, status: e.target.value }))}>
-          <option value="">All statuses</option>
-          <option value="todo">To Do</option>
-          <option value="in_progress">In Progress</option>
+          <option value="">All</option>
+          <option value="not_done">Not Done</option>
           <option value="done">Done</option>
         </select>
       </div>
