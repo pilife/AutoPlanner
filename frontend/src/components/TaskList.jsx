@@ -21,8 +21,9 @@ function buildTree(tasks) {
   return roots;
 }
 
-function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, expanded, onToggleExpand }) {
+function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, expandedIds, onToggleExpand }) {
   const hasChildren = task.children && task.children.length > 0;
+  const expanded = expandedIds.has(task.id);
 
   return (
     <>
@@ -72,7 +73,7 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
           onDelete={onDelete}
           onStatusToggle={onStatusToggle}
           onAddChild={onAddChild}
-          expanded={expanded}
+          expandedIds={expandedIds}
           onToggleExpand={onToggleExpand}
         />
       ))}
@@ -149,7 +150,7 @@ function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild
               onDelete={onDelete}
               onStatusToggle={onStatusToggle}
               onAddChild={onAddChild}
-              expanded={expandedIds.has(t.id)}
+              expandedIds={expandedIds}
               onToggleExpand={toggleExpand}
             />
           ))}
