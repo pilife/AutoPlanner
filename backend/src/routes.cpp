@@ -8,6 +8,8 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <set>
+#include <map>
 
 using json = nlohmann::json;
 
@@ -401,9 +403,13 @@ void registerRoutes(httplib::Server& server, Database& db) {
             }
 
             std::vector<PlanItem> incompleteItems;
+            // Collect done task IDs and their existing daily plan assignments
+            std::set<int> doneTaskIds;
             for (const auto& item : weeklyPlan->items) {
                 auto task = db.getTask(userId, item.task_id);
-                if (task && task->status != "done") {
+                if (task && task->status == "done") {
+                    doneTaskIds.insert(item.task_id);
+                } else if (task) {
                     incompleteItems.push_back(item);
                 }
             }
@@ -415,6 +421,20 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 return;
             }
 
+            // Preserve done tasks in their existing daily plans
+            std::map<std::string, std::vector<PlanItem>> preservedItems; // date -> items
+            auto allWeekDays = getRemainingWeekDays(monday, monday);
+            for (const auto& day : allWeekDays) {
+                auto existingPlan = db.getPlanByTypeAndDate(userId, "daily", day);
+                if (existingPlan) {
+                    for (const auto& item : existingPlan->items) {
+                        if (doneTaskIds.count(item.task_id)) {
+                            preservedItems[day].push_back(item);
+                        }
+                    }
+                }
+            }
+
             int dailyCapacity = 480;
             int totalRemaining = 0;
             for (const auto& item : incompleteItems)
@@ -423,8 +443,19 @@ void registerRoutes(httplib::Server& server, Database& db) {
 
             std::vector<std::vector<PlanItem>> dailyItems(numDays);
             std::vector<int> dayMinutes(numDays, 0);
-            int currentDay = 0;
 
+            // Pre-fill preserved done items for remaining days
+            for (int i = 0; i < numDays; i++) {
+                auto it = preservedItems.find(remainingDays[i]);
+                if (it != preservedItems.end()) {
+                    for (const auto& item : it->second) {
+                        dailyItems[i].push_back(item);
+                        dayMinutes[i] += item.duration_minutes;
+                    }
+                }
+            }
+
+            int currentDay = 0;
             for (const auto& item : incompleteItems) {
                 while (currentDay < numDays &&
                        dayMinutes[currentDay] + item.duration_minutes > dailyCapacity) {
@@ -446,6 +477,7 @@ void registerRoutes(httplib::Server& server, Database& db) {
             }
 
             json plans = json::array();
+            // Save remaining days (with both preserved done + new incomplete items)
             for (int i = 0; i < numDays; i++) {
                 Plan daily;
                 daily.type = "daily";
@@ -453,6 +485,19 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 daily.items = dailyItems[i];
                 auto saved = db.createPlan(userId, daily);
                 plans.push_back(saved);
+            }
+            // Also save past days that only have preserved done items (don't wipe them)
+            for (const auto& day : allWeekDays) {
+                if (day >= startDate) continue; // already handled above
+                auto it = preservedItems.find(day);
+                if (it != preservedItems.end() && !it->second.empty()) {
+                    Plan daily;
+                    daily.type = "daily";
+                    daily.date = day;
+                    daily.items = it->second;
+                    auto saved = db.createPlan(userId, daily);
+                    plans.push_back(saved);
+                }
             }
 
             json result;

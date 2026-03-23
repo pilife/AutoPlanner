@@ -3,6 +3,7 @@ import { toMinutes, fromMinutes } from '../helpers';
 import MarkdownEditor from './MarkdownEditor';
 
 export default function TaskForm({ task, allTasks = [], onSave, onCancel }) {
+  const isLeaf = !task.id || !allTasks.some(t => t.parent_id === task.id);
   const [form, setForm] = useState({
     title: task.title || '',
     description: task.description || '',
@@ -97,15 +98,21 @@ export default function TaskForm({ task, allTasks = [], onSave, onCancel }) {
             </div>
             <div className="form-group">
               <label>Estimated Time</label>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <input type="number" min="0.5" step="0.5" value={form.estimatedValue}
-                       onChange={set('estimatedValue')} style={{ flex: 1 }} />
-                <select value={form.estimatedUnit} onChange={set('estimatedUnit')} style={{ width: 90 }}>
-                  <option value="minutes">min</option>
-                  <option value="hours">hours</option>
-                  <option value="days">days</option>
-                </select>
-              </div>
+              {isLeaf ? (
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input type="number" min="0.5" step="0.5" value={form.estimatedValue}
+                         onChange={set('estimatedValue')} style={{ flex: 1 }} />
+                  <select value={form.estimatedUnit} onChange={set('estimatedUnit')} style={{ width: 90 }}>
+                    <option value="minutes">min</option>
+                    <option value="hours">hours</option>
+                    <option value="days">days</option>
+                  </select>
+                </div>
+              ) : (
+                <div style={{ color: '#636e72', fontSize: '0.85rem', padding: '6px 0' }}>
+                  Estimated time is derived from subtasks
+                </div>
+              )}
             </div>
           </div>
           <div className="form-row">

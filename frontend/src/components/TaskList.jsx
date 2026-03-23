@@ -80,23 +80,41 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
   );
 }
 
-function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild }) {
-  const [expandedIds, setExpandedIds] = useState(new Set());
+const EXPAND_STORAGE_KEY = 'autoplanner_task_expanded';
 
-  // Auto-expand all nodes that have children on initial load
+function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild }) {
+  const [expandedIds, setExpandedIds] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(EXPAND_STORAGE_KEY));
+      if (Array.isArray(saved)) return new Set(saved);
+    } catch (_) {}
+    return null; // null = not yet initialized
+  });
+
+  // On first load (or when saved state is empty), expand all parent nodes
   useEffect(() => {
-    const ids = new Set();
-    const collect = (nodes) => {
-      for (const n of nodes) {
-        if (n.children && n.children.length > 0) {
-          ids.add(n.id);
-          collect(n.children);
+    setExpandedIds(prev => {
+      if (prev !== null && prev.size > 0) return prev;
+      const ids = new Set();
+      const collect = (nodes) => {
+        for (const n of nodes) {
+          if (n.children && n.children.length > 0) {
+            ids.add(n.id);
+            collect(n.children);
+          }
         }
-      }
-    };
-    collect(tree);
-    setExpandedIds(ids);
+      };
+      collect(tree);
+      return ids;
+    });
   }, [allTasks]);
+
+  // Persist to localStorage whenever expandedIds changes
+  useEffect(() => {
+    if (expandedIds !== null) {
+      localStorage.setItem(EXPAND_STORAGE_KEY, JSON.stringify([...expandedIds]));
+    }
+  }, [expandedIds]);
 
   const toggleExpand = (id) => {
     setExpandedIds(prev => {
