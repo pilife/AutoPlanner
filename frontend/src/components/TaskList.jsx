@@ -86,15 +86,15 @@ function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild
   const [expandedIds, setExpandedIds] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(EXPAND_STORAGE_KEY));
-      if (Array.isArray(saved)) return new Set(saved);
+      if (Array.isArray(saved) && saved.length > 0) return new Set(saved);
     } catch (_) {}
-    return null; // null = not yet initialized
+    return new Set();
   });
 
   // On first load (or when saved state is empty), expand all parent nodes
   useEffect(() => {
     setExpandedIds(prev => {
-      if (prev !== null && prev.size > 0) return prev;
+      if (prev.size > 0) return prev;
       const ids = new Set();
       const collect = (nodes) => {
         for (const n of nodes) {
@@ -111,9 +111,7 @@ function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild
 
   // Persist to localStorage whenever expandedIds changes
   useEffect(() => {
-    if (expandedIds !== null) {
-      localStorage.setItem(EXPAND_STORAGE_KEY, JSON.stringify([...expandedIds]));
-    }
+    localStorage.setItem(EXPAND_STORAGE_KEY, JSON.stringify([...expandedIds]));
   }, [expandedIds]);
 
   const toggleExpand = (id) => {
