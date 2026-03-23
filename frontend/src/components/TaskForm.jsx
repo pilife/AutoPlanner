@@ -1,15 +1,14 @@
 import { useState } from 'react';
-import { toMinutes, fromMinutes, bestUnit } from '../helpers';
+import { toMinutes, fromMinutes } from '../helpers';
 import MarkdownEditor from './MarkdownEditor';
 
 export default function TaskForm({ task, allTasks = [], onSave, onCancel }) {
-  const initUnit = bestUnit(task.estimated_minutes || 30);
   const [form, setForm] = useState({
     title: task.title || '',
     description: task.description || '',
     priority: task.priority || 3,
-    estimatedValue: fromMinutes(task.estimated_minutes || 30, initUnit),
-    estimatedUnit: initUnit,
+    estimatedValue: fromMinutes(task.estimated_minutes || 60, 'hours'),
+    estimatedUnit: 'hours',
     category: task.category || '',
     status: task.status || 'todo',
     due_date: task.due_date || '',

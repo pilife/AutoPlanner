@@ -394,6 +394,17 @@ export default function PlanView() {
     }
   };
 
+  const handleActualTimeChange = async (taskId, hours) => {
+    const minutes = Math.round(Number(hours) * 60);
+    if (isNaN(minutes) || minutes < 0) return;
+    try {
+      await updateTask(taskId, { actual_minutes: minutes });
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const handleSplitTask = async (taskId) => {
     const names = splitNames.map(n => n.trim()).filter(Boolean);
     if (names.length === 0) return;
@@ -563,12 +574,15 @@ export default function PlanView() {
                               {isDone && <span className="status-badge status-done" style={{ marginLeft: 8 }}>done</span>}
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <input type="number" min="5" step="5" value={item.duration_minutes}
-                                     onChange={e => handleDurationChange(idx, e.target.value)}
-                                     style={{ width: 60 }} />
                               <span style={{ color: '#636e72', fontSize: '0.8rem' }}>
-                                ({formatDuration(item.duration_minutes)})
+                                Est: {formatDuration(item.duration_minutes)}
                               </span>
+                              <span style={{ color: '#636e72', fontSize: '0.8rem' }}>Real:</span>
+                              <input type="number" min="0" step="0.5"
+                                     value={task ? +(task.actual_minutes / 60).toFixed(1) : 0}
+                                     onChange={e => handleActualTimeChange(item.task_id, e.target.value)}
+                                     style={{ width: 55 }} />
+                              <span style={{ color: '#636e72', fontSize: '0.8rem' }}>h</span>
                               <button className="btn btn-sm btn-danger"
                                       onClick={() => handleRemoveItem(idx)}>Remove</button>
                             </div>
@@ -712,7 +726,15 @@ export default function PlanView() {
                             </span>
                             {task && <span style={{ fontSize: '0.8rem', color: '#636e72', marginLeft: 8 }}>{task.category}</span>}
                           </div>
-                          <span className="duration">{formatDuration(item.duration_minutes)}</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginRight: 6 }}>
+                            <span style={{ color: '#636e72', fontSize: '0.8rem' }}>Est: {formatDuration(item.duration_minutes)}</span>
+                            <span style={{ color: '#636e72', fontSize: '0.8rem' }}>Real:</span>
+                            <input type="number" min="0" step="0.5"
+                                   value={task ? +(task.actual_minutes / 60).toFixed(1) : 0}
+                                   onChange={e => handleActualTimeChange(item.task_id, e.target.value)}
+                                   style={{ width: 55 }} />
+                            <span style={{ color: '#636e72', fontSize: '0.8rem' }}>h</span>
+                          </div>
                           <div style={{ display: 'flex', gap: 4 }}>
                             <button
                               className={`btn btn-sm ${isDone ? '' : 'btn-primary'}`}
