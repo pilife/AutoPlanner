@@ -88,6 +88,48 @@ function buildPlanTree(items, taskMap) {
   }));
 }
 
+// Build a nested tree for a group's items, including intermediate parent nodes
+function buildNestedTree(items, rootId, taskMap) {
+  const planTaskIds = new Set(items.map(it => it.task_id));
+  const itemByTaskId = {};
+  for (const it of items) itemByTaskId[it.task_id] = it;
+
+  // Collect all ancestor chains
+  const nodeIds = new Set();
+  for (const item of items) {
+    let cur = taskMap[item.task_id];
+    while (cur) {
+      nodeIds.add(cur.id);
+      cur = cur.parent_id && taskMap[cur.parent_id] ? taskMap[cur.parent_id] : null;
+    }
+  }
+
+  // Build children map
+  const childrenOf = {};
+  for (const id of nodeIds) {
+    const task = taskMap[id];
+    const parentId = task && task.parent_id && nodeIds.has(task.parent_id) ? task.parent_id : null;
+    if (parentId) {
+      if (!childrenOf[parentId]) childrenOf[parentId] = [];
+      childrenOf[parentId].push(id);
+    }
+  }
+
+  // Recursive build
+  const buildNode = (id) => {
+    const children = (childrenOf[id] || []).map(buildNode);
+    return {
+      id,
+      task: taskMap[id],
+      planItem: itemByTaskId[id] || null,
+      isLeaf: planTaskIds.has(id),
+      children,
+    };
+  };
+
+  return buildNode(rootId);
+}
+
 function DailyPlansDragGrid({ dailyPlans, taskMap, onPlansUpdated, onTaskClick }) {
   const [localPlans, setLocalPlans] = useState(dailyPlans);
   const [dragItem, setDragItem] = useState(null);
@@ -532,7 +574,68 @@ export default function PlanView() {
             <div className="card">
               {planTree.map(group => {
                 const groupMinutes = group.items.reduce((s, it) => s + it.duration_minutes, 0);
-                const isLeafRoot = group.items.length === 1 && group.items[0].task_id === group.rootId;
+                const tree = buildNestedTree(group.items, group.rootId, taskMap);
+
+                const renderNode = (node, depth) => {
+                  if (node.isLeaf) {
+                    const task = node.task;
+                    const idx = getItemIndex(node.id);
+                    const isDone = task?.status === 'done';
+                    return (
+                      <div key={node.id}
+                           className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}
+                           style={{ paddingLeft: 12 + depth * 24 }}>
+                        <div style={{ display: 'flex', gap: 2, marginRight: 8 }}>
+                          <button className="btn btn-sm" onClick={() => handleMoveItem(idx, -1)}
+                                  disabled={idx === 0}>{'\u25B2'}</button>
+                          <button className="btn btn-sm" onClick={() => handleMoveItem(idx, 1)}
+                                  disabled={idx === plan.items.length - 1}>{'\u25BC'}</button>
+                        </div>
+                        <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => task && setSelectedTask(task)}>
+                          <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
+                            {task ? task.title : `Task #${node.id}`}
+                          </span>
+                          {isDone && <span className="status-badge status-done" style={{ marginLeft: 8 }}>done</span>}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ color: '#636e72', fontSize: '0.8rem' }}>
+                            Est: {formatDuration(node.planItem.duration_minutes)}
+                          </span>
+                          <span style={{ color: '#636e72', fontSize: '0.8rem' }}>Real:</span>
+                          <input type="number" min="0" step="0.5"
+                                 value={task ? +(task.actual_minutes / 60).toFixed(1) : 0}
+                                 onChange={e => handleActualTimeChange(node.id, e.target.value)}
+                                 style={{ width: 55 }} />
+                          <span style={{ color: '#636e72', fontSize: '0.8rem' }}>h</span>
+                          <button className="btn btn-sm btn-danger"
+                                  onClick={() => handleRemoveItem(idx)}>Remove</button>
+                        </div>
+                      </div>
+                    );
+                  }
+                  // Intermediate parent node (not a plan item itself)
+                  if (depth === 0) {
+                    // Root rendered as group header, just render children
+                    return node.children.map(child => renderNode(child, depth + 1));
+                  }
+                  const subtotal = node.children.reduce((s, c) => {
+                    const sum = (n) => n.planItem ? n.planItem.duration_minutes : n.children.reduce((a, ch) => a + sum(ch), 0);
+                    return s + sum(c);
+                  }, 0);
+                  return (
+                    <div key={node.id}>
+                      <div className="plan-tree-parent" style={{ paddingLeft: 12 + depth * 24 }}>
+                        <span style={{ color: '#2d3436', fontWeight: 600, fontSize: '0.85rem' }}>
+                          {node.task?.title || `Task #${node.id}`}
+                        </span>
+                        <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>
+                          ({formatDuration(subtotal)})
+                        </span>
+                      </div>
+                      {node.children.map(child => renderNode(child, depth + 1))}
+                    </div>
+                  );
+                };
 
                 return (
                   <div key={group.rootId} className="plan-group">
@@ -549,46 +652,10 @@ export default function PlanView() {
                       )}
                     </div>
                     <div className="plan-group-items">
-                      {group.items.map(item => {
-                        const task = taskMap[item.task_id];
-                        const idx = getItemIndex(item.task_id);
-                        const isDone = task?.status === 'done';
-                        return (
-                          <div key={item.task_id}
-                               className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}>
-                            <div style={{ display: 'flex', gap: 2, marginRight: 8 }}>
-                              <button className="btn btn-sm" onClick={() => handleMoveItem(idx, -1)}
-                                      disabled={idx === 0}>{'\u25B2'}</button>
-                              <button className="btn btn-sm" onClick={() => handleMoveItem(idx, 1)}
-                                      disabled={idx === plan.items.length - 1}>{'\u25BC'}</button>
-                            </div>
-                            <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => task && setSelectedTask(task)}>
-                              {!isLeafRoot && (
-                                <div style={{ fontSize: '0.75rem', color: '#999' }}>
-                                  {getTaskPath(item.task_id, taskMap)}
-                                </div>
-                              )}
-                              <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
-                                {task ? task.title : `Task #${item.task_id}`}
-                              </span>
-                              {isDone && <span className="status-badge status-done" style={{ marginLeft: 8 }}>done</span>}
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <span style={{ color: '#636e72', fontSize: '0.8rem' }}>
-                                Est: {formatDuration(item.duration_minutes)}
-                              </span>
-                              <span style={{ color: '#636e72', fontSize: '0.8rem' }}>Real:</span>
-                              <input type="number" min="0" step="0.5"
-                                     value={task ? +(task.actual_minutes / 60).toFixed(1) : 0}
-                                     onChange={e => handleActualTimeChange(item.task_id, e.target.value)}
-                                     style={{ width: 55 }} />
-                              <span style={{ color: '#636e72', fontSize: '0.8rem' }}>h</span>
-                              <button className="btn btn-sm btn-danger"
-                                      onClick={() => handleRemoveItem(idx)}>Remove</button>
-                            </div>
-                          </div>
-                        );
-                      })}
+                      {tree.isLeaf
+                        ? renderNode(tree, 0)
+                        : tree.children.map(child => renderNode(child, 1))
+                      }
                     </div>
                   </div>
                 );

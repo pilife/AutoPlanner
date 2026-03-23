@@ -189,6 +189,12 @@ body {
   border-bottom: 1px solid #eee;
 }
 .plan-group-item:last-child { border-bottom: none; }
+.plan-tree-parent {
+  padding: 6px 12px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #eee;
+  border-left: 3px solid #74b9ff;
+}
 .plan-item-done { opacity: 0.6; }
 
 /* Warning banner */
