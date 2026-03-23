@@ -439,11 +439,16 @@ export default function PlanView() {
   const handleActualTimeChange = async (taskId, hours) => {
     const minutes = Math.round(Number(hours) * 60);
     if (isNaN(minutes) || minutes < 0) return;
+    // Optimistic local update
+    setTaskMap(prev => ({
+      ...prev,
+      [taskId]: { ...prev[taskId], actual_minutes: minutes },
+    }));
     try {
       await updateTask(taskId, { actual_minutes: minutes });
-      load();
     } catch (e) {
       setError(e.message);
+      load(); // revert on error
     }
   };
 
