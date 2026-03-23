@@ -356,6 +356,10 @@ void registerRoutes(httplib::Server& server, Database& db) {
 
             std::vector<PlanItem> items;
             for (const auto& t : leafTasks) {
+                // Skip tasks completed before this week
+                if (t.status == "done" && !t.updated_at.empty() && t.updated_at.substr(0, 10) < monday) {
+                    continue;
+                }
                 PlanItem item;
                 item.task_id = t.id;
                 item.scheduled_time = "";
