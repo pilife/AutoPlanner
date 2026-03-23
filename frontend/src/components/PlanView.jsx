@@ -576,52 +576,70 @@ export default function PlanView() {
                 const groupMinutes = group.items.reduce((s, it) => s + it.duration_minutes, 0);
                 const tree = buildNestedTree(group.items, group.rootId, taskMap);
 
+                const getSubtotal = (n) => n.planItem ? n.planItem.duration_minutes : n.children.reduce((a, ch) => a + getSubtotal(ch), 0);
+
+                const renderLeaf = (node, depth) => {
+                  const task = node.task;
+                  const idx = getItemIndex(node.id);
+                  const isDone = task?.status === 'done';
+                  return (
+                    <div key={node.id}
+                         className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}
+                         style={{ paddingLeft: 12 + depth * 24 }}>
+                      <div style={{ display: 'flex', gap: 2, marginRight: 8 }}>
+                        <button className="btn btn-sm" onClick={() => handleMoveItem(idx, -1)}
+                                disabled={idx === 0}>{'\u25B2'}</button>
+                        <button className="btn btn-sm" onClick={() => handleMoveItem(idx, 1)}
+                                disabled={idx === plan.items.length - 1}>{'\u25BC'}</button>
+                      </div>
+                      <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => task && setSelectedTask(task)}>
+                        <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
+                          {task ? task.title : `Task #${node.id}`}
+                        </span>
+                        {isDone && <span className="status-badge status-done" style={{ marginLeft: 8 }}>done</span>}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ color: '#636e72', fontSize: '0.8rem' }}>
+                          Est: {formatDuration(node.planItem.duration_minutes)}
+                        </span>
+                        <span style={{ color: '#636e72', fontSize: '0.8rem' }}>Real:</span>
+                        <input type="number" min="0" step="0.5"
+                               value={task ? +(task.actual_minutes / 60).toFixed(1) : 0}
+                               onChange={e => handleActualTimeChange(node.id, e.target.value)}
+                               style={{ width: 55 }} />
+                        <span style={{ color: '#636e72', fontSize: '0.8rem' }}>h</span>
+                        <button className="btn btn-sm btn-danger"
+                                onClick={() => handleRemoveItem(idx)}>Remove</button>
+                      </div>
+                    </div>
+                  );
+                };
+
                 const renderNode = (node, depth) => {
+                  // Leaf that is also the root (standalone task) — render directly
+                  if (node.isLeaf && depth === 0) return renderLeaf(node, depth);
+                  // Leaf child — wrap with parent-style label + controls underneath
                   if (node.isLeaf) {
-                    const task = node.task;
-                    const idx = getItemIndex(node.id);
-                    const isDone = task?.status === 'done';
                     return (
-                      <div key={node.id}
-                           className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}
-                           style={{ paddingLeft: 12 + depth * 24 }}>
-                        <div style={{ display: 'flex', gap: 2, marginRight: 8 }}>
-                          <button className="btn btn-sm" onClick={() => handleMoveItem(idx, -1)}
-                                  disabled={idx === 0}>{'\u25B2'}</button>
-                          <button className="btn btn-sm" onClick={() => handleMoveItem(idx, 1)}
-                                  disabled={idx === plan.items.length - 1}>{'\u25BC'}</button>
-                        </div>
-                        <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => task && setSelectedTask(task)}>
-                          <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
-                            {task ? task.title : `Task #${node.id}`}
+                      <div key={node.id}>
+                        <div className="plan-tree-parent" style={{ paddingLeft: 12 + depth * 24 }}>
+                          <span style={{ color: '#2d3436', fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer' }}
+                                onClick={() => node.task && setSelectedTask(node.task)}>
+                            {node.task?.title || `Task #${node.id}`}
                           </span>
-                          {isDone && <span className="status-badge status-done" style={{ marginLeft: 8 }}>done</span>}
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span style={{ color: '#636e72', fontSize: '0.8rem' }}>
-                            Est: {formatDuration(node.planItem.duration_minutes)}
+                          <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>
+                            ({formatDuration(node.planItem.duration_minutes)})
                           </span>
-                          <span style={{ color: '#636e72', fontSize: '0.8rem' }}>Real:</span>
-                          <input type="number" min="0" step="0.5"
-                                 value={task ? +(task.actual_minutes / 60).toFixed(1) : 0}
-                                 onChange={e => handleActualTimeChange(node.id, e.target.value)}
-                                 style={{ width: 55 }} />
-                          <span style={{ color: '#636e72', fontSize: '0.8rem' }}>h</span>
-                          <button className="btn btn-sm btn-danger"
-                                  onClick={() => handleRemoveItem(idx)}>Remove</button>
                         </div>
+                        {renderLeaf(node, depth + 1)}
                       </div>
                     );
                   }
-                  // Intermediate parent node (not a plan item itself)
+                  // Root node — header is already rendered, just render children
                   if (depth === 0) {
-                    // Root rendered as group header, just render children
                     return node.children.map(child => renderNode(child, depth + 1));
                   }
-                  const subtotal = node.children.reduce((s, c) => {
-                    const sum = (n) => n.planItem ? n.planItem.duration_minutes : n.children.reduce((a, ch) => a + sum(ch), 0);
-                    return s + sum(c);
-                  }, 0);
+                  // Intermediate parent node
                   return (
                     <div key={node.id}>
                       <div className="plan-tree-parent" style={{ paddingLeft: 12 + depth * 24 }}>
@@ -629,7 +647,7 @@ export default function PlanView() {
                           {node.task?.title || `Task #${node.id}`}
                         </span>
                         <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>
-                          ({formatDuration(subtotal)})
+                          ({formatDuration(getSubtotal(node))})
                         </span>
                       </div>
                       {node.children.map(child => renderNode(child, depth + 1))}
@@ -758,6 +776,115 @@ export default function PlanView() {
           {buildPlanTree(plan.items, taskMap).map(group => {
             const groupMinutes = group.items.reduce((s, it) => s + it.duration_minutes, 0);
             const groupDone = group.items.every(it => taskMap[it.task_id]?.status === 'done');
+            const tree = buildNestedTree(group.items, group.rootId, taskMap);
+            const getSubtotal = (n) => n.planItem ? n.planItem.duration_minutes : n.children.reduce((a, ch) => a + getSubtotal(ch), 0);
+
+            const renderDailyLeaf = (node, depth) => {
+              const task = node.task;
+              const isDone = task?.status === 'done';
+              const isSplitting = splittingTaskId === node.id;
+              return (
+                <div key={`leaf-${node.id}`}>
+                  <div className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}
+                       style={{ paddingLeft: 12 + depth * 24 }}>
+                    <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => task && setSelectedTask(task)}>
+                      <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
+                        {task ? task.title : `Task #${node.id}`}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginRight: 6 }}>
+                      <span style={{ color: '#636e72', fontSize: '0.8rem' }}>Est: {formatDuration(node.planItem.duration_minutes)}</span>
+                      <span style={{ color: '#636e72', fontSize: '0.8rem' }}>Real:</span>
+                      <input type="number" min="0" step="0.5"
+                             value={task ? +(task.actual_minutes / 60).toFixed(1) : 0}
+                             onChange={e => handleActualTimeChange(node.id, e.target.value)}
+                             style={{ width: 55 }} />
+                      <span style={{ color: '#636e72', fontSize: '0.8rem' }}>h</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <button
+                        className={`btn btn-sm ${isDone ? '' : 'btn-primary'}`}
+                        onClick={async () => {
+                          await updateTask(node.id, { status: isDone ? 'todo' : 'done' });
+                          load();
+                        }}
+                      >
+                        {isDone ? 'Undo' : 'Done'}
+                      </button>
+                      <button className="btn btn-sm" title="Split into subtasks"
+                        onClick={() => {
+                          if (isSplitting) { setSplittingTaskId(null); setSplitNames(['', '']); }
+                          else { setSplittingTaskId(node.id); setSplitNames(['', '']); }
+                        }}
+                      >
+                        Split
+                      </button>
+                      <button className="btn btn-sm btn-danger" title="Remove from weekly and daily plan"
+                        onClick={() => handleRemoveFromWeek(node.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                  {isSplitting && (
+                    <div style={{ padding: '8px 12px', background: '#f8f9fa', borderRadius: 6, margin: '4px 0 8px', marginLeft: 12 + depth * 24 }}>
+                      <div style={{ fontSize: '0.8rem', color: '#636e72', marginBottom: 6 }}>
+                        Split "{task?.title}" into subtasks:
+                      </div>
+                      {splitNames.map((name, idx) => (
+                        <input key={idx} type="text" placeholder={`Subtask ${idx + 1}`} value={name}
+                          onChange={e => { const next = [...splitNames]; next[idx] = e.target.value; setSplitNames(next); }}
+                          style={{ width: '100%', padding: '4px 8px', marginBottom: 4, borderRadius: 4, border: '1px solid #dfe6e9', fontSize: '0.85rem' }}
+                          autoFocus={idx === 0} />
+                      ))}
+                      <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                        <button className="btn btn-sm" onClick={() => setSplitNames([...splitNames, ''])}>+ Add</button>
+                        <button className="btn btn-sm btn-primary" disabled={splitNames.every(n => !n.trim())}
+                          onClick={() => handleSplitTask(node.id)}>Split</button>
+                        <button className="btn btn-sm" onClick={() => { setSplittingTaskId(null); setSplitNames(['', '']); }}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            };
+
+            const renderDailyNode = (node, depth) => {
+              if (node.isLeaf && depth === 0) return renderDailyLeaf(node, depth);
+              if (node.isLeaf) {
+                return (
+                  <div key={node.id}>
+                    <div className="plan-tree-parent" style={{ paddingLeft: 12 + depth * 24 }}>
+                      <span style={{ color: '#2d3436', fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer' }}
+                            onClick={() => node.task && setSelectedTask(node.task)}>
+                        {node.task?.title || `Task #${node.id}`}
+                      </span>
+                      <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>
+                        ({formatDuration(node.planItem.duration_minutes)})
+                      </span>
+                    </div>
+                    {renderDailyLeaf(node, depth + 1)}
+                  </div>
+                );
+              }
+              if (depth === 0) {
+                return node.children.map(child => renderDailyNode(child, depth + 1));
+              }
+              return (
+                <div key={node.id}>
+                  <div className="plan-tree-parent" style={{ paddingLeft: 12 + depth * 24 }}>
+                    <span style={{ color: '#2d3436', fontWeight: 600, fontSize: '0.85rem' }}>
+                      {node.task?.title || `Task #${node.id}`}
+                    </span>
+                    <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>
+                      ({formatDuration(getSubtotal(node))})
+                    </span>
+                  </div>
+                  {node.children.map(child => renderDailyNode(child, depth + 1))}
+                </div>
+              );
+            };
+
             return (
               <div key={group.rootId} className="plan-group">
                 <div className="plan-group-header">
@@ -774,99 +901,10 @@ export default function PlanView() {
                   {groupDone && <span className="status-badge status-done" style={{ marginLeft: 8 }}>done</span>}
                 </div>
                 <div className="plan-group-items">
-                  {group.items.map((item, j) => {
-                    const task = taskMap[item.task_id];
-                    const isDone = task?.status === 'done';
-                    const isLeafRoot = group.items.length === 1 && item.task_id === group.rootId;
-                    const isSplitting = splittingTaskId === item.task_id;
-                    return (
-                      <div key={item.task_id}>
-                        <div className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}>
-                          <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => task && setSelectedTask(task)}>
-                            {!isLeafRoot && (
-                              <div style={{ fontSize: '0.75rem', color: '#999' }}>
-                                {getTaskPath(item.task_id, taskMap)}
-                              </div>
-                            )}
-                            <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
-                              {task ? task.title : `Task #${item.task_id}`}
-                            </span>
-                            {task && <span style={{ fontSize: '0.8rem', color: '#636e72', marginLeft: 8 }}>{task.category}</span>}
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginRight: 6 }}>
-                            <span style={{ color: '#636e72', fontSize: '0.8rem' }}>Est: {formatDuration(item.duration_minutes)}</span>
-                            <span style={{ color: '#636e72', fontSize: '0.8rem' }}>Real:</span>
-                            <input type="number" min="0" step="0.5"
-                                   value={task ? +(task.actual_minutes / 60).toFixed(1) : 0}
-                                   onChange={e => handleActualTimeChange(item.task_id, e.target.value)}
-                                   style={{ width: 55 }} />
-                            <span style={{ color: '#636e72', fontSize: '0.8rem' }}>h</span>
-                          </div>
-                          <div style={{ display: 'flex', gap: 4 }}>
-                            <button
-                              className={`btn btn-sm ${isDone ? '' : 'btn-primary'}`}
-                              onClick={async () => {
-                                await updateTask(item.task_id, { status: isDone ? 'todo' : 'done' });
-                                load();
-                              }}
-                            >
-                              {isDone ? 'Undo' : 'Done'}
-                            </button>
-                            <button
-                              className="btn btn-sm"
-                              title="Split into subtasks"
-                              onClick={() => {
-                                if (isSplitting) { setSplittingTaskId(null); setSplitNames(['', '']); }
-                                else { setSplittingTaskId(item.task_id); setSplitNames(['', '']); }
-                              }}
-                            >
-                              Split
-                            </button>
-                            <button
-                              className="btn btn-sm btn-danger"
-                              title="Remove from weekly and daily plan"
-                              onClick={() => handleRemoveFromWeek(item.task_id)}
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        </div>
-                        {isSplitting && (
-                          <div style={{ padding: '8px 12px', background: '#f8f9fa', borderRadius: 6, margin: '4px 0 8px' }}>
-                            <div style={{ fontSize: '0.8rem', color: '#636e72', marginBottom: 6 }}>
-                              Split "{task?.title}" into subtasks:
-                            </div>
-                            {splitNames.map((name, idx) => (
-                              <input
-                                key={idx}
-                                type="text"
-                                placeholder={`Subtask ${idx + 1}`}
-                                value={name}
-                                onChange={e => {
-                                  const next = [...splitNames];
-                                  next[idx] = e.target.value;
-                                  setSplitNames(next);
-                                }}
-                                style={{ width: '100%', padding: '4px 8px', marginBottom: 4, borderRadius: 4, border: '1px solid #dfe6e9', fontSize: '0.85rem' }}
-                                autoFocus={idx === 0}
-                              />
-                            ))}
-                            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                              <button className="btn btn-sm" onClick={() => setSplitNames([...splitNames, ''])}>+ Add</button>
-                              <button
-                                className="btn btn-sm btn-primary"
-                                disabled={splitNames.every(n => !n.trim())}
-                                onClick={() => handleSplitTask(item.task_id)}
-                              >
-                                Split
-                              </button>
-                              <button className="btn btn-sm" onClick={() => { setSplittingTaskId(null); setSplitNames(['', '']); }}>Cancel</button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                  {tree.isLeaf
+                    ? renderDailyNode(tree, 0)
+                    : tree.children.map(child => renderDailyNode(child, 1))
+                  }
                 </div>
               </div>
             );
