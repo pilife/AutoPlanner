@@ -455,11 +455,32 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 }
             }
 
-            int currentDay = 0;
+            // Separate main tasks from side tasks (low priority + short duration)
+            // Side tasks are interleaved so there's always something to switch to
+            auto allTasksList = db.getAllTasks(userId, "", "");
+            std::map<int, Task> taskById;
+            for (const auto& t : allTasksList) taskById[t.id] = t;
+
+            std::vector<PlanItem> mainItems, sideItems;
             for (const auto& item : incompleteItems) {
+                auto it = taskById.find(item.task_id);
+                int priority = (it != taskById.end()) ? it->second.priority : 3;
+                // Side task: priority 4-5 and <= 60 minutes
+                if (priority >= 4 && item.duration_minutes <= 60) {
+                    sideItems.push_back(item);
+                } else {
+                    mainItems.push_back(item);
+                }
+            }
+
+            int currentDay = 0;
+            int mainCountInDay = 0;
+            size_t sideIdx = 0;
+            for (const auto& item : mainItems) {
                 while (currentDay < numDays &&
                        dayMinutes[currentDay] + item.duration_minutes > dailyCapacity) {
                     currentDay++;
+                    mainCountInDay = 0;
                 }
                 if (currentDay >= numDays) currentDay = numDays - 1;
 
@@ -468,12 +489,43 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 scheduled.scheduled_time = "";
                 scheduled.duration_minutes = item.duration_minutes;
                 dailyItems[currentDay].push_back(scheduled);
-
                 dayMinutes[currentDay] += item.duration_minutes;
+                mainCountInDay++;
+
+                // After every 2 main tasks, insert a side task if available and fits
+                if (mainCountInDay % 2 == 0 && sideIdx < sideItems.size()) {
+                    const auto& side = sideItems[sideIdx];
+                    if (dayMinutes[currentDay] + side.duration_minutes <= dailyCapacity) {
+                        PlanItem sideScheduled;
+                        sideScheduled.task_id = side.task_id;
+                        sideScheduled.scheduled_time = "";
+                        sideScheduled.duration_minutes = side.duration_minutes;
+                        dailyItems[currentDay].push_back(sideScheduled);
+                        dayMinutes[currentDay] += side.duration_minutes;
+                        sideIdx++;
+                    }
+                }
+
                 if (currentDay < numDays - 1 &&
                     dayMinutes[currentDay] >= dailyCapacity) {
                     currentDay++;
+                    mainCountInDay = 0;
                 }
+            }
+
+            // Distribute remaining side tasks across days with capacity
+            for (; sideIdx < sideItems.size(); sideIdx++) {
+                const auto& side = sideItems[sideIdx];
+                int bestDay = 0;
+                for (int d = 1; d < numDays; d++) {
+                    if (dayMinutes[d] < dayMinutes[bestDay]) bestDay = d;
+                }
+                PlanItem sideScheduled;
+                sideScheduled.task_id = side.task_id;
+                sideScheduled.scheduled_time = "";
+                sideScheduled.duration_minutes = side.duration_minutes;
+                dailyItems[bestDay].push_back(sideScheduled);
+                dayMinutes[bestDay] += side.duration_minutes;
             }
 
             json plans = json::array();

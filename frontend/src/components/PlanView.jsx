@@ -81,11 +81,26 @@ function buildPlanTree(items, taskMap) {
     groups[rootId].push(item);
   }
 
-  return rootOrder.map(rootId => ({
+  const result = rootOrder.map(rootId => ({
     rootId,
     rootTask: taskMap[rootId],
     items: groups[rootId],
   }));
+  // Sort groups by root task priority (ascending), then by task id for stability
+  result.sort((a, b) => {
+    const pa = a.rootTask?.priority || 3;
+    const pb = b.rootTask?.priority || 3;
+    return pa !== pb ? pa - pb : (a.rootId - b.rootId);
+  });
+  // Sort items within each group by leaf task priority
+  for (const group of result) {
+    group.items.sort((a, b) => {
+      const pa = taskMap[a.task_id]?.priority || 3;
+      const pb = taskMap[b.task_id]?.priority || 3;
+      return pa !== pb ? pa - pb : (a.task_id - b.task_id);
+    });
+  }
+  return result;
 }
 
 // Build a nested tree for a group's items, including intermediate parent nodes
@@ -113,6 +128,15 @@ function buildNestedTree(items, rootId, taskMap) {
       if (!childrenOf[parentId]) childrenOf[parentId] = [];
       childrenOf[parentId].push(id);
     }
+  }
+
+  // Sort children by priority for consistent ordering
+  for (const parentId in childrenOf) {
+    childrenOf[parentId].sort((a, b) => {
+      const pa = taskMap[a]?.priority || 3;
+      const pb = taskMap[b]?.priority || 3;
+      return pa !== pb ? pa - pb : (a - b);
+    });
   }
 
   // Recursive build
@@ -392,32 +416,6 @@ export default function PlanView() {
     }
   };
 
-  const handleMoveItem = async (index, direction) => {
-    if (!plan) return;
-    const items = [...plan.items];
-    const target = index + direction;
-    if (target < 0 || target >= items.length) return;
-    [items[index], items[target]] = [items[target], items[index]];
-    try {
-      await savePlan({ ...plan, items });
-      load();
-    } catch (e) {
-      setError(e.message);
-    }
-  };
-
-  const handleDurationChange = async (index, newDuration) => {
-    if (!plan) return;
-    const items = [...plan.items];
-    items[index] = { ...items[index], duration_minutes: Number(newDuration) };
-    try {
-      await savePlan({ ...plan, items });
-      load();
-    } catch (e) {
-      setError(e.message);
-    }
-  };
-
   const handleAddTask = async (taskId) => {
     if (!plan) return;
     const task = taskMap[taskId];
@@ -591,12 +589,6 @@ export default function PlanView() {
                     <div key={node.id}
                          className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}
                          style={{ paddingLeft: 12 + depth * 24 }}>
-                      <div style={{ display: 'flex', gap: 2, marginRight: 8 }}>
-                        <button className="btn btn-sm" onClick={() => handleMoveItem(idx, -1)}
-                                disabled={idx === 0}>{'\u25B2'}</button>
-                        <button className="btn btn-sm" onClick={() => handleMoveItem(idx, 1)}
-                                disabled={idx === plan.items.length - 1}>{'\u25BC'}</button>
-                      </div>
                       <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => task && setSelectedTask(task)}>
                         <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
                           {task ? task.title : `Task #${node.id}`}
