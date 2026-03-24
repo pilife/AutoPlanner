@@ -423,6 +423,7 @@ void registerRoutes(httplib::Server& server, Database& db) {
 
             // Preserve done tasks in their existing daily plans
             std::map<std::string, std::vector<PlanItem>> preservedItems; // date -> items
+            std::set<int> assignedDoneIds;
             auto allWeekDays = getRemainingWeekDays(monday, monday);
             for (const auto& day : allWeekDays) {
                 auto existingPlan = db.getPlanByTypeAndDate(userId, "daily", day);
@@ -430,8 +431,21 @@ void registerRoutes(httplib::Server& server, Database& db) {
                     for (const auto& item : existingPlan->items) {
                         if (doneTaskIds.count(item.task_id)) {
                             preservedItems[day].push_back(item);
+                            assignedDoneIds.insert(item.task_id);
                         }
                     }
+                }
+            }
+            // Done tasks not yet in any daily plan — assign to today/first remaining day
+            for (int taskId : doneTaskIds) {
+                if (!assignedDoneIds.count(taskId)) {
+                    auto it = std::find_if(weeklyPlan->items.begin(), weeklyPlan->items.end(),
+                        [taskId](const PlanItem& pi) { return pi.task_id == taskId; });
+                    PlanItem pi;
+                    pi.task_id = taskId;
+                    pi.scheduled_time = "";
+                    pi.duration_minutes = (it != weeklyPlan->items.end()) ? it->duration_minutes : 30;
+                    preservedItems[startDate].push_back(pi);
                 }
             }
 
@@ -538,19 +552,7 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 auto saved = db.createPlan(userId, daily);
                 plans.push_back(saved);
             }
-            // Also save past days that only have preserved done items (don't wipe them)
-            for (const auto& day : allWeekDays) {
-                if (day >= startDate) continue; // already handled above
-                auto it = preservedItems.find(day);
-                if (it != preservedItems.end() && !it->second.empty()) {
-                    Plan daily;
-                    daily.type = "daily";
-                    daily.date = day;
-                    daily.items = it->second;
-                    auto saved = db.createPlan(userId, daily);
-                    plans.push_back(saved);
-                }
-            }
+            // Past days are not re-saved to preserve their reviewed status
 
             json result;
             result["plans"] = plans;
