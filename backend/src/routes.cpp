@@ -731,6 +731,29 @@ void registerRoutes(httplib::Server& server, Database& db) {
                          : std::make_pair(taskId, std::string("Task #") + std::to_string(taskId));
             };
 
+            // Build full path for a task (e.g. "Root > Parent > Task")
+            auto getTaskPath = [&](int taskId) -> std::string {
+                std::vector<std::string> parts;
+                auto t = db.getTask(userId, taskId);
+                while (t) {
+                    parts.push_back(t->title);
+                    t = (t->parent_id > 0) ? db.getTask(userId, t->parent_id) : std::nullopt;
+                }
+                std::reverse(parts.begin(), parts.end());
+                std::string path;
+                for (size_t i = 0; i < parts.size(); i++) {
+                    if (i > 0) path += " > ";
+                    path += parts[i];
+                }
+                return path;
+            };
+
+            // Build parent_id -> task mapping for hierarchy
+            auto getParentId = [&](int taskId) -> int {
+                auto t = db.getTask(userId, taskId);
+                return t ? t->parent_id : 0;
+            };
+
             for (const auto& item : weeklyPlan->items) {
                 auto task = db.getTask(userId, item.task_id);
                 if (!task) continue;
@@ -757,7 +780,9 @@ void registerRoutes(httplib::Server& server, Database& db) {
                         {"planned_minutes", item.duration_minutes},
                         {"actual_minutes", task->actual_minutes},
                         {"root_task_id", rootId},
-                        {"root_task_title", rootTitle}
+                        {"root_task_title", rootTitle},
+                        {"parent_id", getParentId(task->id)},
+                        {"path", getTaskPath(task->id)}
                     });
                 } else {
                     summary.tasks_carried_over++;
@@ -768,7 +793,9 @@ void registerRoutes(httplib::Server& server, Database& db) {
                         {"status", task->status},
                         {"planned_minutes", item.duration_minutes},
                         {"root_task_id", rootId},
-                        {"root_task_title", rootTitle}
+                        {"root_task_title", rootTitle},
+                        {"parent_id", getParentId(task->id)},
+                        {"path", getTaskPath(task->id)}
                     });
                 }
             }

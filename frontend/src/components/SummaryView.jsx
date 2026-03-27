@@ -49,9 +49,53 @@ function RootTaskBreakdown({ summary }) {
       <h4 style={{ marginBottom: 12 }}>By Project</h4>
       {groups.map(group => {
         const completed = group.items.filter(t => t.actual_minutes !== undefined);
-        const incomplete = group.items.filter(t => t.actual_minutes === undefined);
         const totalPlanned = group.items.reduce((s, t) => s + t.planned_minutes, 0);
         const totalCompleted = completed.reduce((s, t) => s + t.planned_minutes, 0);
+
+        // Group items by their direct parent for hierarchy display
+        const byParent = {};
+        const parentOrder = [];
+        for (const t of group.items) {
+          const pid = (t.parent_id && t.parent_id !== group.rootId) ? t.parent_id : 0;
+          if (!byParent[pid]) { byParent[pid] = []; parentOrder.push(pid); }
+          byParent[pid].push(t);
+        }
+
+        // Extract intermediate parent names from paths
+        const parentNames = {};
+        for (const t of group.items) {
+          if (t.path && t.parent_id && t.parent_id !== group.rootId) {
+            const parts = t.path.split(' > ');
+            // Everything between root and leaf are intermediates
+            if (parts.length >= 3) {
+              parentNames[t.parent_id] = parts[parts.length - 2];
+            }
+          }
+        }
+
+        const renderItem = (t, i, depth) => {
+          const isDone = t.actual_minutes !== undefined;
+          return (
+            <div key={`${t.task_id}-${i}`} className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}
+                 style={{ paddingLeft: 12 + depth * 20 }}>
+              <span className={`status-badge ${isDone ? 'status-done' : `status-${t.status || 'todo'}`}`} style={{ marginRight: 8 }}>
+                {isDone ? 'done' : (t.status || 'todo').replace('_', ' ')}
+              </span>
+              <div style={{ flex: 1 }}>
+                <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
+                  {t.title}
+                </span>
+                <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>{t.category}</span>
+              </div>
+              <span style={{ color: '#636e72', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
+                {isDone
+                  ? `${formatDuration(t.actual_minutes || t.planned_minutes)} / ${formatDuration(t.planned_minutes)}`
+                  : formatDuration(t.planned_minutes)
+                }
+              </span>
+            </div>
+          );
+        };
 
         return (
           <div key={group.rootId} className="plan-group" style={{ marginBottom: 16 }}>
@@ -68,25 +112,28 @@ function RootTaskBreakdown({ summary }) {
               </span>
             </div>
             <div className="plan-group-items">
-              {group.items.map((t, i) => {
-                const isDone = t.actual_minutes !== undefined;
+              {parentOrder.map(pid => {
+                const items = byParent[pid];
+                if (pid === 0) {
+                  // Direct children of root — render at depth 1
+                  return items.map((t, i) => renderItem(t, i, 1));
+                }
+                // Intermediate parent group
+                const parentName = parentNames[pid] || `Subtask Group`;
+                const subPlanned = items.reduce((s, t) => s + t.planned_minutes, 0);
+                const subCompleted = items.filter(t => t.actual_minutes !== undefined)
+                  .reduce((s, t) => s + t.planned_minutes, 0);
                 return (
-                  <div key={i} className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}>
-                    <span className={`status-badge ${isDone ? 'status-done' : `status-${t.status || 'todo'}`}`} style={{ marginRight: 8 }}>
-                      {isDone ? 'done' : (t.status || 'todo').replace('_', ' ')}
-                    </span>
-                    <div style={{ flex: 1 }}>
-                      <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
-                        {t.title}
+                  <div key={`parent-${pid}`}>
+                    <div className="plan-tree-parent" style={{ paddingLeft: 32 }}>
+                      <span style={{ color: '#2d3436', fontWeight: 600, fontSize: '0.85rem' }}>
+                        {parentName}
                       </span>
-                      <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>{t.category}</span>
+                      <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>
+                        ({formatDuration(subCompleted)}/{formatDuration(subPlanned)})
+                      </span>
                     </div>
-                    <span style={{ color: '#636e72', fontSize: '0.8rem' }}>
-                      {isDone
-                        ? `${formatDuration(t.actual_minutes || t.planned_minutes)} actual / ${formatDuration(t.planned_minutes)} planned`
-                        : formatDuration(t.planned_minutes)
-                      }
-                    </span>
+                    {items.map((t, i) => renderItem(t, i, 2))}
                   </div>
                 );
               })}
