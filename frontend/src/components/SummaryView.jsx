@@ -38,11 +38,88 @@ function groupByRoot(tasks) {
   return order.map(id => groups[id]);
 }
 
+// Build a tree from path strings: insert each task at the right depth
+function buildPathTree(items) {
+  const root = { name: null, children: {}, tasks: [] };
+  for (const t of items) {
+    const parts = t.path ? t.path.split(' > ') : [t.title];
+    // Skip root name (index 0) — it's the group header already
+    let node = root;
+    for (let i = 1; i < parts.length - 1; i++) {
+      const key = parts[i];
+      if (!node.children[key]) node.children[key] = { name: key, children: {}, tasks: [] };
+      node = node.children[key];
+    }
+    node.tasks.push(t);
+  }
+  return root;
+}
+
 function RootTaskBreakdown({ summary }) {
   const allTasks = [...summary.completed_tasks, ...summary.incomplete_tasks];
   if (allTasks.length === 0) return null;
 
   const groups = groupByRoot(allTasks);
+
+  const renderLeaf = (t, i, depth) => {
+    const isDone = t.actual_minutes !== undefined;
+    return (
+      <div key={`${t.task_id}-${i}`} className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}
+           style={{ paddingLeft: 12 + depth * 20 }}>
+        <span className={`status-badge ${isDone ? 'status-done' : `status-${t.status || 'todo'}`}`} style={{ marginRight: 8 }}>
+          {isDone ? 'done' : (t.status || 'todo').replace('_', ' ')}
+        </span>
+        <div style={{ flex: 1 }}>
+          <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
+            {t.title}
+          </span>
+          <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>{t.category}</span>
+        </div>
+        <span style={{ color: '#636e72', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
+          {isDone
+            ? `${formatDuration(t.actual_minutes || t.planned_minutes)} / ${formatDuration(t.planned_minutes)}`
+            : formatDuration(t.planned_minutes)
+          }
+        </span>
+      </div>
+    );
+  };
+
+  const renderTreeNode = (node, depth) => {
+    const childKeys = Object.keys(node.children);
+    const subTasks = [];
+    const collectAll = (n) => { subTasks.push(...n.tasks); for (const k in n.children) collectAll(n.children[k]); };
+
+    return (
+      <>
+        {/* Render tasks at this level */}
+        {node.tasks.map((t, i) => renderLeaf(t, i, depth))}
+        {/* Render child groups */}
+        {childKeys.map(key => {
+          const child = node.children[key];
+          const all = [];
+          const collect = (n) => { all.push(...n.tasks); for (const k in n.children) collect(n.children[k]); };
+          collect(child);
+          const subPlanned = all.reduce((s, t) => s + t.planned_minutes, 0);
+          const subDone = all.filter(t => t.actual_minutes !== undefined);
+          const subCompleted = subDone.reduce((s, t) => s + t.planned_minutes, 0);
+          return (
+            <div key={key}>
+              <div className="plan-tree-parent" style={{ paddingLeft: 12 + depth * 20 }}>
+                <span style={{ color: '#2d3436', fontWeight: 600, fontSize: '0.85rem' }}>
+                  {child.name}
+                </span>
+                <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>
+                  {subDone.length}/{all.length} &middot; {formatDuration(subCompleted)}/{formatDuration(subPlanned)}
+                </span>
+              </div>
+              {renderTreeNode(child, depth + 1)}
+            </div>
+          );
+        })}
+      </>
+    );
+  };
 
   return (
     <div style={{ marginTop: 20 }}>
@@ -51,51 +128,7 @@ function RootTaskBreakdown({ summary }) {
         const completed = group.items.filter(t => t.actual_minutes !== undefined);
         const totalPlanned = group.items.reduce((s, t) => s + t.planned_minutes, 0);
         const totalCompleted = completed.reduce((s, t) => s + t.planned_minutes, 0);
-
-        // Group items by their direct parent for hierarchy display
-        const byParent = {};
-        const parentOrder = [];
-        for (const t of group.items) {
-          const pid = (t.parent_id && t.parent_id !== group.rootId) ? t.parent_id : 0;
-          if (!byParent[pid]) { byParent[pid] = []; parentOrder.push(pid); }
-          byParent[pid].push(t);
-        }
-
-        // Extract intermediate parent names from paths
-        const parentNames = {};
-        for (const t of group.items) {
-          if (t.path && t.parent_id && t.parent_id !== group.rootId) {
-            const parts = t.path.split(' > ');
-            // Everything between root and leaf are intermediates
-            if (parts.length >= 3) {
-              parentNames[t.parent_id] = parts[parts.length - 2];
-            }
-          }
-        }
-
-        const renderItem = (t, i, depth) => {
-          const isDone = t.actual_minutes !== undefined;
-          return (
-            <div key={`${t.task_id}-${i}`} className={`plan-group-item ${isDone ? 'plan-item-done' : ''}`}
-                 style={{ paddingLeft: 12 + depth * 20 }}>
-              <span className={`status-badge ${isDone ? 'status-done' : `status-${t.status || 'todo'}`}`} style={{ marginRight: 8 }}>
-                {isDone ? 'done' : (t.status || 'todo').replace('_', ' ')}
-              </span>
-              <div style={{ flex: 1 }}>
-                <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
-                  {t.title}
-                </span>
-                <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>{t.category}</span>
-              </div>
-              <span style={{ color: '#636e72', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
-                {isDone
-                  ? `${formatDuration(t.actual_minutes || t.planned_minutes)} / ${formatDuration(t.planned_minutes)}`
-                  : formatDuration(t.planned_minutes)
-                }
-              </span>
-            </div>
-          );
-        };
+        const tree = buildPathTree(group.items);
 
         return (
           <div key={group.rootId} className="plan-group" style={{ marginBottom: 16 }}>
@@ -112,31 +145,7 @@ function RootTaskBreakdown({ summary }) {
               </span>
             </div>
             <div className="plan-group-items">
-              {parentOrder.map(pid => {
-                const items = byParent[pid];
-                if (pid === 0) {
-                  // Direct children of root — render at depth 1
-                  return items.map((t, i) => renderItem(t, i, 1));
-                }
-                // Intermediate parent group
-                const parentName = parentNames[pid] || `Subtask Group`;
-                const subPlanned = items.reduce((s, t) => s + t.planned_minutes, 0);
-                const subCompleted = items.filter(t => t.actual_minutes !== undefined)
-                  .reduce((s, t) => s + t.planned_minutes, 0);
-                return (
-                  <div key={`parent-${pid}`}>
-                    <div className="plan-tree-parent" style={{ paddingLeft: 32 }}>
-                      <span style={{ color: '#2d3436', fontWeight: 600, fontSize: '0.85rem' }}>
-                        {parentName}
-                      </span>
-                      <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>
-                        ({formatDuration(subCompleted)}/{formatDuration(subPlanned)})
-                      </span>
-                    </div>
-                    {items.map((t, i) => renderItem(t, i, 2))}
-                  </div>
-                );
-              })}
+              {renderTreeNode(tree, 1)}
             </div>
           </div>
         );
