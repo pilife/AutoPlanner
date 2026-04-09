@@ -354,7 +354,13 @@ void registerRoutes(httplib::Server& server, Database& db) {
             }
 
             std::sort(leafTasks.begin(), leafTasks.end(),
-                [](const Task& a, const Task& b) { return a.priority < b.priority; });
+                [](const Task& a, const Task& b) {
+                    // in_progress first, then by priority
+                    bool aInProgress = (a.status == "in_progress");
+                    bool bInProgress = (b.status == "in_progress");
+                    if (aInProgress != bInProgress) return aInProgress > bInProgress;
+                    return a.priority < b.priority;
+                });
 
             std::vector<PlanItem> items;
             for (const auto& t : leafTasks) {
