@@ -29,9 +29,6 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
     <>
       <tr className="task-row">
         <td style={{ paddingLeft: 12 + depth * 24 }}>
-          <span className={`priority priority-${task.priority}`} />
-        </td>
-        <td style={{ paddingLeft: depth * 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             {hasChildren ? (
               <button className="tree-toggle" onClick={() => onToggleExpand(task.id)}>
@@ -44,7 +41,7 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
           </div>
         </td>
         <td>{task.category || '-'}</td>
-        <td>{PRIORITY_LABELS[task.priority]}</td>
+        <td><span className={`priority priority-${task.priority}`} style={{ marginRight: 6 }} />{PRIORITY_LABELS[task.priority]}</td>
         <td>{formatDuration(task.estimated_minutes)}</td>
         <td>{task.due_date || '-'}</td>
         <td>
@@ -130,7 +127,6 @@ function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild
       <table className="task-table">
         <thead>
           <tr>
-            <th></th>
             <th>Title</th>
             <th>Category</th>
             <th>Priority</th>
