@@ -89,21 +89,32 @@ function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild
     return new Set();
   });
 
-  // On first load (or when saved state is empty), expand all parent nodes
+  // On first load expand all non-done parent nodes; also scrub done task IDs
+  // from any existing saved state so done tasks' children fold automatically
   useEffect(() => {
+    const doneIds = new Set(allTasks.filter(t => t.status === 'done').map(t => t.id));
     setExpandedIds(prev => {
-      if (prev.size > 0) return prev;
-      const ids = new Set();
-      const collect = (nodes) => {
-        for (const n of nodes) {
-          if (n.children && n.children.length > 0) {
-            ids.add(n.id);
-            collect(n.children);
+      if (prev.size === 0) {
+        const ids = new Set();
+        const collect = (nodes) => {
+          for (const n of nodes) {
+            if (n.children && n.children.length > 0 && n.status !== 'done') {
+              ids.add(n.id);
+              collect(n.children);
+            }
           }
-        }
-      };
-      collect(tree);
-      return ids;
+        };
+        collect(tree);
+        return ids;
+      }
+      // Remove done task IDs from saved state
+      let changed = false;
+      const next = new Set();
+      for (const id of prev) {
+        if (doneIds.has(id)) changed = true;
+        else next.add(id);
+      }
+      return changed ? next : prev;
     });
   }, [allTasks]);
 
@@ -158,26 +169,18 @@ function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild
 
 export default function TaskList() {
   const [tasks, setTasks] = useState([]);
-  const [filter, setFilter] = useState({ status: 'not_done', category: '' });
   const [editing, setEditing] = useState(null); // null = closed, {} = new, task = edit
   const [error, setError] = useState('');
 
   const load = async () => {
     try {
-      const all = await getTasks();
-      if (filter.status === 'done') {
-        setTasks(all.filter(t => t.status === 'done'));
-      } else if (filter.status === 'not_done') {
-        setTasks(all.filter(t => t.status !== 'done'));
-      } else {
-        setTasks(all);
-      }
+      setTasks(await getTasks());
     } catch (e) {
       setError(e.message);
     }
   };
 
-  useEffect(() => { load(); }, [filter]);
+  useEffect(() => { load(); }, []);
 
   const handleSave = async (task) => {
     try {
@@ -223,14 +226,6 @@ export default function TaskList() {
       </div>
 
       {error && <div style={{ color: '#d63031', marginBottom: 12 }}>{error}</div>}
-
-      <div className="filters">
-        <select value={filter.status} onChange={e => setFilter(f => ({ ...f, status: e.target.value }))}>
-          <option value="">All</option>
-          <option value="not_done">Not Done</option>
-          <option value="done">Done</option>
-        </select>
-      </div>
 
       {tasks.length === 0 ? (
         <div className="empty">No tasks yet. Create one to get started.</div>
