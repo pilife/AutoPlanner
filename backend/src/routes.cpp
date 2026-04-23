@@ -210,7 +210,9 @@ void registerRoutes(httplib::Server& server, Database& db) {
         [&](const httplib::Request& req, httplib::Response& res, int userId) {
         std::string status   = req.get_param_value("status");
         std::string category = req.get_param_value("category");
-        auto tasks = db.getAllTasks(userId, status, category);
+        bool includeArchived = req.get_param_value("include_archived") == "1"
+                             || req.get_param_value("include_archived") == "true";
+        auto tasks = db.getAllTasks(userId, status, category, includeArchived);
         jsonResponse(res, 200, tasks);
     }));
 

@@ -15,6 +15,7 @@ struct Task {
     std::string category;
     std::string status = "todo"; // todo | in_progress | done
     std::string due_date;        // YYYY-MM-DD
+    int archived = 0;            // 0 = active, 1 = archived
     std::string created_at;
     std::string updated_at;
 };
@@ -26,6 +27,7 @@ inline void to_json(nlohmann::json& j, const Task& t) {
         {"priority", t.priority}, {"estimated_minutes", t.estimated_minutes},
         {"actual_minutes", t.actual_minutes}, {"category", t.category},
         {"status", t.status}, {"due_date", t.due_date},
+        {"archived", t.archived},
         {"created_at", t.created_at}, {"updated_at", t.updated_at}
     };
 }
@@ -41,6 +43,7 @@ inline void from_json(const nlohmann::json& j, Task& t) {
     if (j.contains("category"))          j.at("category").get_to(t.category);
     if (j.contains("status"))            j.at("status").get_to(t.status);
     if (j.contains("due_date"))          j.at("due_date").get_to(t.due_date);
+    if (j.contains("archived"))          j.at("archived").get_to(t.archived);
 }
 
 struct PlanItem {

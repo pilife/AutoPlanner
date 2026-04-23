@@ -31,7 +31,8 @@ public:
     Task createTask(int userId, const Task& task);
     std::optional<Task> getTask(int userId, int id);
     std::vector<Task> getAllTasks(int userId, const std::string& status = "",
-                                  const std::string& category = "");
+                                  const std::string& category = "",
+                                  bool includeArchived = false);
     bool updateTask(int userId, int id, const Task& task);
     bool deleteTask(int userId, int id);
 

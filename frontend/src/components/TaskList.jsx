@@ -21,13 +21,14 @@ function buildTree(tasks) {
   return roots;
 }
 
-function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, expandedIds, onToggleExpand }) {
+function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, onArchiveToggle, expandedIds, onToggleExpand }) {
   const hasChildren = task.children && task.children.length > 0;
   const expanded = expandedIds.has(task.id);
+  const isArchived = task.archived === 1 || task.archived === true;
 
   return (
     <>
-      <tr className="task-row">
+      <tr className="task-row" style={isArchived ? { opacity: 0.55 } : {}}>
         <td style={{ paddingLeft: 12 + depth * 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             {hasChildren ? (
@@ -38,6 +39,9 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
               <span style={{ width: 16, display: 'inline-block' }} />
             )}
             <span>{task.title}</span>
+            {isArchived && (
+              <span style={{ fontSize: '0.7rem', color: '#b2bec3', marginLeft: 6, fontStyle: 'italic' }}>archived</span>
+            )}
           </div>
         </td>
         <td>{task.category || '-'}</td>
@@ -57,6 +61,15 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
           <div style={{ display: 'flex', gap: 4 }}>
             <button className="btn btn-sm" onClick={() => onAddChild(task)} title="Add subtask">+</button>
             <button className="btn btn-sm" onClick={() => onEdit(task)}>Edit</button>
+            {task.status === 'done' && (
+              <button
+                className="btn btn-sm"
+                onClick={() => onArchiveToggle(task)}
+                title={isArchived ? 'Unarchive' : 'Archive'}
+              >
+                {isArchived ? 'Unarchive' : 'Archive'}
+              </button>
+            )}
             <button className="btn btn-sm btn-danger" onClick={() => onDelete(task.id)}>Del</button>
           </div>
         </td>
@@ -70,6 +83,7 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
           onDelete={onDelete}
           onStatusToggle={onStatusToggle}
           onAddChild={onAddChild}
+          onArchiveToggle={onArchiveToggle}
           expandedIds={expandedIds}
           onToggleExpand={onToggleExpand}
         />
@@ -80,7 +94,7 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, ex
 
 const EXPAND_STORAGE_KEY = 'autoplanner_task_expanded';
 
-function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild }) {
+function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild, onArchiveToggle }) {
   const [expandedIds, setExpandedIds] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(EXPAND_STORAGE_KEY));
@@ -157,6 +171,7 @@ function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild
               onDelete={onDelete}
               onStatusToggle={onStatusToggle}
               onAddChild={onAddChild}
+              onArchiveToggle={onArchiveToggle}
               expandedIds={expandedIds}
               onToggleExpand={toggleExpand}
             />
@@ -171,16 +186,18 @@ export default function TaskList() {
   const [tasks, setTasks] = useState([]);
   const [editing, setEditing] = useState(null); // null = closed, {} = new, task = edit
   const [error, setError] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
 
   const load = async () => {
     try {
-      setTasks(await getTasks());
+      const params = showArchived ? { include_archived: '1' } : {};
+      setTasks(await getTasks(params));
     } catch (e) {
       setError(e.message);
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [showArchived]);
 
   const handleSave = async (task) => {
     try {
@@ -216,13 +233,33 @@ export default function TaskList() {
     setEditing({ parent_id: parentTask.id, category: parentTask.category, priority: parentTask.priority });
   };
 
+  const handleArchiveToggle = async (task) => {
+    const isArchived = task.archived === 1 || task.archived === true;
+    try {
+      await updateTask(task.id, { archived: isArchived ? 0 : 1 });
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const tree = buildTree(tasks);
 
   return (
     <div>
       <div className="page-header">
         <h2>Tasks</h2>
-        <button className="btn btn-primary" onClick={() => setEditing({})}>+ New Task</button>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.9rem', color: '#636e72' }}>
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={e => setShowArchived(e.target.checked)}
+            />
+            Show archived
+          </label>
+          <button className="btn btn-primary" onClick={() => setEditing({})}>+ New Task</button>
+        </div>
       </div>
 
       {error && <div style={{ color: '#d63031', marginBottom: 12 }}>{error}</div>}
@@ -237,6 +274,7 @@ export default function TaskList() {
           onDelete={handleDelete}
           onStatusToggle={handleStatusToggle}
           onAddChild={handleAddChild}
+          onArchiveToggle={handleArchiveToggle}
         />
       )}
 

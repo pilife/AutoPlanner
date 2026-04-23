@@ -74,9 +74,16 @@ void Database::initTables() {
                 category          NVARCHAR(100) DEFAULT '',
                 status            NVARCHAR(20)  DEFAULT 'todo',
                 due_date          NVARCHAR(10)  DEFAULT '',
+                archived          BIT DEFAULT 0,
                 created_at        NVARCHAR(50) NOT NULL,
                 updated_at        NVARCHAR(50) NOT NULL
             )
+        )");
+        // Migration: add archived column to existing tables
+        backend_->exec(R"(
+            IF NOT EXISTS (SELECT 1 FROM sys.columns
+                           WHERE object_id = OBJECT_ID('dbo.tasks') AND name = 'archived')
+            ALTER TABLE dbo.tasks ADD archived BIT DEFAULT 0
         )");
         backend_->exec(R"(
             IF OBJECT_ID('dbo.plans', 'U') IS NULL
@@ -159,6 +166,7 @@ void Database::initTables() {
                 category        TEXT DEFAULT '',
                 status          TEXT DEFAULT 'todo',
                 due_date        TEXT DEFAULT '',
+                archived        INTEGER DEFAULT 0,
                 created_at      TEXT NOT NULL,
                 updated_at      TEXT NOT NULL
             );
@@ -202,6 +210,11 @@ void Database::initTables() {
             CREATE INDEX IF NOT EXISTS idx_summaries_user ON weekly_summaries(user_id);
             CREATE INDEX IF NOT EXISTS idx_logs_user ON productivity_logs(user_id);
         )");
+
+        // Migration: add archived column if it doesn't exist
+        try {
+            backend_->exec("ALTER TABLE tasks ADD COLUMN archived INTEGER DEFAULT 0");
+        } catch (...) { /* column already exists */ }
     }
 }
 
@@ -235,11 +248,11 @@ std::string Database::insertSessionSql() const {
 std::string Database::insertTaskSql() const {
     if (useAzureSql_)
         return "INSERT INTO tasks (user_id, parent_id, title, description, priority, "
-               "estimated_minutes, actual_minutes, category, status, due_date, created_at, updated_at) "
-               "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+               "estimated_minutes, actual_minutes, category, status, due_date, archived, created_at, updated_at) "
+               "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     return "INSERT INTO tasks (user_id, parent_id, title, description, priority, "
-           "estimated_minutes, actual_minutes, category, status, due_date, created_at, updated_at) "
-           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+           "estimated_minutes, actual_minutes, category, status, due_date, archived, created_at, updated_at) "
+           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 }
 
 std::string Database::insertLogSql() const {
@@ -264,14 +277,15 @@ static Task rowToTask(const Row& r) {
     t.category          = r.getText(7);
     t.status            = r.getText(8);
     t.due_date          = r.getText(9);
-    t.created_at        = r.getText(10);
-    t.updated_at        = r.getText(11);
+    t.archived          = r.getInt(10);
+    t.created_at        = r.getText(11);
+    t.updated_at        = r.getText(12);
     return t;
 }
 
 static const char* TASK_COLS =
     "id, parent_id, title, description, priority, estimated_minutes, "
-    "actual_minutes, category, status, due_date, created_at, updated_at";
+    "actual_minutes, category, status, due_date, archived, created_at, updated_at";
 
 // ── Users ──────────────────────────────────────────────────────────────
 
@@ -394,6 +408,7 @@ Task Database::createTask(int userId, const Task& task) {
          Param::Int(task.priority), Param::Int(task.estimated_minutes),
          Param::Int(task.actual_minutes), Param::Text(task.category),
          Param::Text(task.status), Param::Text(task.due_date),
+         Param::Int(task.archived),
          Param::Text(ts), Param::Text(ts)});
 
     Task result = task;
@@ -413,7 +428,8 @@ std::optional<Task> Database::getTask(int userId, int id) {
 }
 
 std::vector<Task> Database::getAllTasks(int userId, const std::string& status,
-                                        const std::string& category) {
+                                        const std::string& category,
+                                        bool includeArchived) {
     std::vector<Task> tasks;
     std::string sql = std::string("SELECT ") + TASK_COLS + " FROM tasks WHERE user_id = ?";
     std::vector<Param> params = {Param::Int(userId)};
@@ -426,6 +442,9 @@ std::vector<Task> Database::getAllTasks(int userId, const std::string& status,
         sql += " AND category = ?";
         params.push_back(Param::Text(category));
     }
+    if (!includeArchived) {
+        sql += " AND archived = 0";
+    }
     sql += " ORDER BY priority ASC, due_date ASC";
 
     backend_->query(sql, params, [&](const Row& r) { tasks.push_back(rowToTask(r)); });
@@ -436,12 +455,13 @@ bool Database::updateTask(int userId, int id, const Task& task) {
     std::string ts = now();
     int affected = backend_->execute(
         "UPDATE tasks SET parent_id=?, title=?, description=?, priority=?, "
-        "estimated_minutes=?, actual_minutes=?, category=?, status=?, due_date=?, updated_at=? "
+        "estimated_minutes=?, actual_minutes=?, category=?, status=?, due_date=?, archived=?, updated_at=? "
         "WHERE id=? AND user_id=?",
         {Param::Int(task.parent_id), Param::Text(task.title), Param::Text(task.description),
          Param::Int(task.priority), Param::Int(task.estimated_minutes),
          Param::Int(task.actual_minutes), Param::Text(task.category),
-         Param::Text(task.status), Param::Text(task.due_date), Param::Text(ts),
+         Param::Text(task.status), Param::Text(task.due_date),
+         Param::Int(task.archived), Param::Text(ts),
          Param::Int(id), Param::Int(userId)});
     return affected > 0;
 }
