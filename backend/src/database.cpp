@@ -79,12 +79,16 @@ void Database::initTables() {
                 updated_at        NVARCHAR(50) NOT NULL
             )
         )");
-        // Migration: add archived column to existing tables
+        // Migration: add archived column to existing tables.
+        // WITH VALUES backfills existing rows (otherwise they'd be NULL).
         backend_->exec(R"(
             IF NOT EXISTS (SELECT 1 FROM sys.columns
                            WHERE object_id = OBJECT_ID('dbo.tasks') AND name = 'archived')
-            ALTER TABLE dbo.tasks ADD archived BIT DEFAULT 0
+            ALTER TABLE dbo.tasks ADD archived BIT NOT NULL DEFAULT 0 WITH VALUES
         )");
+        // Belt and suspenders: set any existing NULLs to 0 in case the
+        // column was added previously without backfilling.
+        backend_->exec("UPDATE dbo.tasks SET archived = 0 WHERE archived IS NULL");
         backend_->exec(R"(
             IF OBJECT_ID('dbo.plans', 'U') IS NULL
             CREATE TABLE dbo.plans (
@@ -443,7 +447,7 @@ std::vector<Task> Database::getAllTasks(int userId, const std::string& status,
         params.push_back(Param::Text(category));
     }
     if (!includeArchived) {
-        sql += " AND archived = 0";
+        sql += " AND (archived = 0 OR archived IS NULL)";
     }
     sql += " ORDER BY priority ASC, due_date ASC";
 
