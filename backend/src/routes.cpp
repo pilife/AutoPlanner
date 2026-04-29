@@ -268,6 +268,7 @@ void registerRoutes(httplib::Server& server, Database& db) {
             if (body.contains("category"))          t.category = body["category"];
             if (body.contains("status"))            t.status = body["status"];
             if (body.contains("due_date"))          t.due_date = body["due_date"];
+            if (body.contains("archived"))          t.archived = body["archived"];
 
             if (db.updateTask(userId, id, t)) {
                 if (oldParentId > 0) db.recalcEstimate(oldParentId);
