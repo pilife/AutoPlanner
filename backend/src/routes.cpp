@@ -344,6 +344,9 @@ void registerRoutes(httplib::Server& server, Database& db) {
             std::string monday = getMondayOfWeek(date);
 
             auto allTasks = db.getAllTasks(userId, "", "");
+            std::map<int, Task> taskById;
+            for (const auto& t : allTasks) taskById[t.id] = t;
+
             std::vector<Task> leafTasks;
             for (const auto& t : allTasks) {
                 bool hasChildren = false;
@@ -356,25 +359,43 @@ void registerRoutes(httplib::Server& server, Database& db) {
                 if (!hasChildren) leafTasks.push_back(t);
             }
 
+            // A leaf is "active" if it (or any ancestor) is in_progress
+            auto hasInProgressAncestor = [&](const Task& leaf) -> bool {
+                if (leaf.status == "in_progress") return true;
+                int pid = leaf.parent_id;
+                while (pid > 0) {
+                    auto it = taskById.find(pid);
+                    if (it == taskById.end()) break;
+                    if (it->second.status == "in_progress") return true;
+                    pid = it->second.parent_id;
+                }
+                return false;
+            };
+
             std::sort(leafTasks.begin(), leafTasks.end(),
-                [](const Task& a, const Task& b) {
-                    // in_progress first, then by priority
-                    bool aInProgress = (a.status == "in_progress");
-                    bool bInProgress = (b.status == "in_progress");
-                    if (aInProgress != bInProgress) return aInProgress > bInProgress;
+                [&](const Task& a, const Task& b) {
+                    // active (in_progress lineage) first, then by priority
+                    bool aActive = hasInProgressAncestor(a);
+                    bool bActive = hasInProgressAncestor(b);
+                    if (aActive != bActive) return aActive > bActive;
                     return a.priority < b.priority;
                 });
 
             std::vector<PlanItem> items;
             for (const auto& t : leafTasks) {
-                // Only include in_progress tasks and done tasks from this week
-                if (t.status == "in_progress") {
-                    PlanItem item;
-                    item.task_id = t.id;
-                    item.scheduled_time = "";
-                    item.duration_minutes = t.estimated_minutes;
-                    items.push_back(item);
-                } else if (t.status == "done" && !t.updated_at.empty() && t.updated_at.substr(0, 10) >= monday) {
+                if (t.status == "done") {
+                    // Keep done leaves that were completed this week
+                    if (!t.updated_at.empty() && t.updated_at.substr(0, 10) >= monday) {
+                        PlanItem item;
+                        item.task_id = t.id;
+                        item.scheduled_time = "";
+                        item.duration_minutes = t.estimated_minutes;
+                        items.push_back(item);
+                    }
+                    continue;
+                }
+                // Include leaf if it is in_progress, or any ancestor is in_progress
+                if (hasInProgressAncestor(t)) {
                     PlanItem item;
                     item.task_id = t.id;
                     item.scheduled_time = "";
