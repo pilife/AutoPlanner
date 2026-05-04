@@ -407,11 +407,13 @@ export default function PlanView() {
 
   const handleRemoveItem = async (index) => {
     if (!plan) return;
+    const prevPlan = plan;
     const newItems = plan.items.filter((_, i) => i !== index);
+    setPlan({ ...plan, items: newItems });
     try {
       await savePlan({ ...plan, items: newItems });
-      load();
     } catch (e) {
+      setPlan(prevPlan);
       setError(e.message);
     }
   };
@@ -425,11 +427,14 @@ export default function PlanView() {
       scheduled_time: '',
       duration_minutes: task.estimated_minutes,
     };
+    const prevPlan = plan;
+    const newItems = [...plan.items, newItem];
+    setPlan({ ...plan, items: newItems });
+    setShowAddTask(false);
     try {
-      await savePlan({ ...plan, items: [...plan.items, newItem] });
-      setShowAddTask(false);
-      load();
+      await savePlan({ ...plan, items: newItems });
     } catch (e) {
+      setPlan(prevPlan);
       setError(e.message);
     }
   };
@@ -515,19 +520,22 @@ export default function PlanView() {
   };
 
   const handleRemoveFromWeek = async (taskId) => {
+    const prevPlan = plan;
+    if (plan) {
+      setPlan({ ...plan, items: plan.items.filter(it => it.task_id !== taskId) });
+    }
     try {
       const weeklyPlan = await getPlan('weekly', date);
       if (weeklyPlan && weeklyPlan.id) {
         const newItems = weeklyPlan.items.filter(it => it.task_id !== taskId);
         await savePlan({ ...weeklyPlan, items: newItems });
       }
-      // Also remove from current daily plan
-      if (plan) {
-        const newItems = plan.items.filter(it => it.task_id !== taskId);
-        await savePlan({ ...plan, items: newItems });
+      if (prevPlan) {
+        const newItems = prevPlan.items.filter(it => it.task_id !== taskId);
+        await savePlan({ ...prevPlan, items: newItems });
       }
-      load();
     } catch (e) {
+      setPlan(prevPlan);
       setError(e.message);
     }
   };
@@ -802,8 +810,14 @@ export default function PlanView() {
                       <button
                         className={`btn btn-sm ${isDone ? '' : 'btn-primary'}`}
                         onClick={async () => {
-                          await updateTask(node.id, { status: isDone ? 'todo' : 'done' });
-                          load();
+                          const newStatus = isDone ? 'todo' : 'done';
+                          setTaskMap(prev => ({ ...prev, [node.id]: { ...prev[node.id], status: newStatus } }));
+                          try {
+                            await updateTask(node.id, { status: newStatus });
+                          } catch (e) {
+                            setError(e.message);
+                            load();
+                          }
                         }}
                       >
                         {isDone ? 'Undo' : 'Done'}
