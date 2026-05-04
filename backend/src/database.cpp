@@ -9,6 +9,8 @@
 #include <cstring>
 #include <sstream>
 #include <iomanip>
+#include <set>
+#include <vector>
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
 
@@ -434,24 +436,44 @@ std::optional<Task> Database::getTask(int userId, int id) {
 std::vector<Task> Database::getAllTasks(int userId, const std::string& status,
                                         const std::string& category,
                                         bool includeArchived) {
-    std::vector<Task> tasks;
-    std::string sql = std::string("SELECT ") + TASK_COLS + " FROM tasks WHERE user_id = ?";
-    std::vector<Param> params = {Param::Int(userId)};
+    // Always fetch the full task set first so we can compute archive descendants.
+    std::vector<Task> all;
+    std::string sql = std::string("SELECT ") + TASK_COLS +
+                      " FROM tasks WHERE user_id = ? ORDER BY priority ASC, due_date ASC";
+    backend_->query(sql, {Param::Int(userId)},
+        [&](const Row& r) { all.push_back(rowToTask(r)); });
 
-    if (!status.empty()) {
-        sql += " AND status = ?";
-        params.push_back(Param::Text(status));
-    }
-    if (!category.empty()) {
-        sql += " AND category = ?";
-        params.push_back(Param::Text(category));
-    }
+    // Compute the set of task IDs to hide: archived tasks plus all of their
+    // descendants (so unarchived children of an archived parent don't orphan
+    // to the top of the tree).
+    std::set<int> hidden;
     if (!includeArchived) {
-        sql += " AND (archived = 0 OR archived IS NULL)";
+        std::set<int> archivedIds;
+        for (const auto& t : all) {
+            if (t.archived) archivedIds.insert(t.id);
+        }
+        // BFS down through children.
+        hidden = archivedIds;
+        bool grew = true;
+        while (grew) {
+            grew = false;
+            for (const auto& t : all) {
+                if (hidden.count(t.id)) continue;
+                if (t.parent_id > 0 && hidden.count(t.parent_id)) {
+                    hidden.insert(t.id);
+                    grew = true;
+                }
+            }
+        }
     }
-    sql += " ORDER BY priority ASC, due_date ASC";
 
-    backend_->query(sql, params, [&](const Row& r) { tasks.push_back(rowToTask(r)); });
+    std::vector<Task> tasks;
+    for (const auto& t : all) {
+        if (hidden.count(t.id)) continue;
+        if (!status.empty() && t.status != status) continue;
+        if (!category.empty() && t.category != category) continue;
+        tasks.push_back(t);
+    }
     return tasks;
 }
 
