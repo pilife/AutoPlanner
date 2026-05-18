@@ -47,7 +47,6 @@ function TaskDetailModal({ task, taskMap, onClose }) {
         {path && <div style={{ fontSize: '0.8rem', color: '#636e72', marginBottom: 12 }}>{path}</div>}
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16, fontSize: '0.85rem' }}>
           <span><strong>Priority:</strong> {PRIORITY_LABELS[task.priority] || task.priority}</span>
-          {task.category && <span><strong>Category:</strong> {task.category}</span>}
           <span><strong>Status:</strong> {task.status}</span>
           {task.estimated_minutes > 0 && <span><strong>Estimate:</strong> {formatDuration(task.estimated_minutes)}</span>}
         </div>
@@ -500,7 +499,6 @@ export default function PlanView() {
           parent_id: taskId,
           title: name,
           priority: parent.priority,
-          category: parent.category,
           status: parent.status,
           estimated_minutes: parent.estimated_minutes,
           due_date: parent.due_date || '',
@@ -699,11 +697,6 @@ export default function PlanView() {
                       <span style={{ color: '#636e72', fontSize: '0.85rem', marginLeft: 8 }}>
                         ({formatDuration(groupMinutes)})
                       </span>
-                      {group.rootTask?.category && (
-                        <span style={{ color: '#b2bec3', fontSize: '0.8rem', marginLeft: 8 }}>
-                          {group.rootTask.category}
-                        </span>
-                      )}
                     </div>
                     <div className="plan-group-items">
                       {tree.isLeaf
@@ -935,11 +928,6 @@ export default function PlanView() {
                   <span style={{ color: '#636e72', fontSize: '0.85rem', marginLeft: 8 }}>
                     ({formatDuration(groupMinutes)})
                   </span>
-                  {group.rootTask?.category && (
-                    <span style={{ color: '#b2bec3', fontSize: '0.8rem', marginLeft: 8 }}>
-                      {group.rootTask.category}
-                    </span>
-                  )}
                   {groupDone && <span className="status-badge status-done" style={{ marginLeft: 8 }}>done</span>}
                 </div>
                 <div className="plan-group-items">

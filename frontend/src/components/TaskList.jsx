@@ -62,7 +62,6 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, on
             )}
           </div>
         </td>
-        <td>{task.category || '-'}</td>
         <td><span className={`priority priority-${task.priority}`} style={{ marginRight: 6 }} />{PRIORITY_LABELS[task.priority]}</td>
         <td>{formatDuration(task.estimated_minutes)}</td>
         <td>{task.due_date || '-'}</td>
@@ -171,7 +170,6 @@ function TaskTree({ tree, allTasks, onEdit, onDelete, onStatusToggle, onAddChild
         <thead>
           <tr>
             <th>Title</th>
-            <th>Category</th>
             <th>Priority</th>
             <th>Est.</th>
             <th>Due</th>
@@ -248,7 +246,7 @@ export default function TaskList() {
   };
 
   const handleAddChild = (parentTask) => {
-    setEditing({ parent_id: parentTask.id, category: parentTask.category, priority: parentTask.priority });
+    setEditing({ parent_id: parentTask.id, priority: parentTask.priority });
   };
 
   const handleArchiveToggle = async (task) => {

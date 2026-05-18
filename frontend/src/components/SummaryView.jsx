@@ -73,7 +73,6 @@ function RootTaskBreakdown({ summary }) {
           <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
             {t.title}
           </span>
-          <span style={{ color: '#636e72', fontSize: '0.8rem', marginLeft: 8 }}>{t.category}</span>
         </div>
         <span style={{ color: '#636e72', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
           {isDone
@@ -195,24 +194,6 @@ function SummaryCard({ summary }) {
           <div className="stat-label">Carried Over</div>
         </div>
       </div>
-
-      {/* Category breakdown */}
-      {Object.keys(summary.category_breakdown).length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <h4 style={{ marginBottom: 10 }}>By Category</h4>
-          <div className="category-bars">
-            {Object.entries(summary.category_breakdown).map(([cat, data]) => (
-              <div key={cat} className="category-bar-row">
-                <span className="category-bar-label">{cat}</span>
-                <CompletionBar completed={data.completed} total={data.planned} />
-                <span style={{ fontSize: '0.8rem', color: '#636e72', minWidth: 80, textAlign: 'right' }}>
-                  {formatDuration(data.completed)}/{formatDuration(data.planned)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Tasks grouped by root task */}
       <RootTaskBreakdown summary={summary} />

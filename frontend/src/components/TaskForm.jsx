@@ -123,21 +123,9 @@ export default function TaskForm({ task, allTasks = [], onSave, onCancel }) {
               )}
             </div>
           </div>
-          <div className="form-row">
-            <div className="form-group">
-              <label>Category</label>
-              <select value={form.category} onChange={set('category')}>
-                <option value="">N/A</option>
-                <option value="Design">Design</option>
-                <option value="Coding">Coding</option>
-                <option value="Test">Test</option>
-                <option value="Monitor">Monitor</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label>Due Date</label>
-              <input type="date" value={form.due_date} onChange={set('due_date')} />
-            </div>
+          <div className="form-group">
+            <label>Due Date</label>
+            <input type="date" value={form.due_date} onChange={set('due_date')} />
           </div>
           <div className="form-group">
             <label>Status</label>
