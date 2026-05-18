@@ -16,11 +16,17 @@ struct Task {
     std::string status = "todo"; // todo | in_progress | done
     std::string due_date;        // YYYY-MM-DD
     int archived = 0;            // 0 = active, 1 = archived
+    std::string stages = "[]";   // JSON array: [{name, hint, actual_minutes, completed_at}, ...]
+    int current_stage = 0;       // Index into stages array
     std::string created_at;
     std::string updated_at;
 };
 
 inline void to_json(nlohmann::json& j, const Task& t) {
+    nlohmann::json stagesJson = nlohmann::json::array();
+    if (!t.stages.empty()) {
+        try { stagesJson = nlohmann::json::parse(t.stages); } catch (...) {}
+    }
     j = {
         {"id", t.id}, {"parent_id", t.parent_id},
         {"title", t.title}, {"description", t.description},
@@ -28,6 +34,7 @@ inline void to_json(nlohmann::json& j, const Task& t) {
         {"actual_minutes", t.actual_minutes}, {"category", t.category},
         {"status", t.status}, {"due_date", t.due_date},
         {"archived", t.archived},
+        {"stages", stagesJson}, {"current_stage", t.current_stage},
         {"created_at", t.created_at}, {"updated_at", t.updated_at}
     };
 }
@@ -44,6 +51,8 @@ inline void from_json(const nlohmann::json& j, Task& t) {
     if (j.contains("status"))            j.at("status").get_to(t.status);
     if (j.contains("due_date"))          j.at("due_date").get_to(t.due_date);
     if (j.contains("archived"))          j.at("archived").get_to(t.archived);
+    if (j.contains("stages") && j.at("stages").is_array()) t.stages = j.at("stages").dump();
+    if (j.contains("current_stage"))     j.at("current_stage").get_to(t.current_stage);
 }
 
 struct PlanItem {

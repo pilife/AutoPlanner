@@ -77,6 +77,8 @@ void Database::initTables() {
                 status            NVARCHAR(20)  DEFAULT 'todo',
                 due_date          NVARCHAR(10)  DEFAULT '',
                 archived          BIT DEFAULT 0,
+                stages            NVARCHAR(MAX) DEFAULT '[]',
+                current_stage     INT DEFAULT 0,
                 created_at        NVARCHAR(50) NOT NULL,
                 updated_at        NVARCHAR(50) NOT NULL
             )
@@ -91,6 +93,19 @@ void Database::initTables() {
         // Belt and suspenders: set any existing NULLs to 0 in case the
         // column was added previously without backfilling.
         backend_->exec("UPDATE dbo.tasks SET archived = 0 WHERE archived IS NULL");
+        // Migration: add stages + current_stage for the template feature.
+        backend_->exec(R"(
+            IF NOT EXISTS (SELECT 1 FROM sys.columns
+                           WHERE object_id = OBJECT_ID('dbo.tasks') AND name = 'stages')
+            ALTER TABLE dbo.tasks ADD stages NVARCHAR(MAX) NOT NULL DEFAULT '[]' WITH VALUES
+        )");
+        backend_->exec(R"(
+            IF NOT EXISTS (SELECT 1 FROM sys.columns
+                           WHERE object_id = OBJECT_ID('dbo.tasks') AND name = 'current_stage')
+            ALTER TABLE dbo.tasks ADD current_stage INT NOT NULL DEFAULT 0 WITH VALUES
+        )");
+        backend_->exec("UPDATE dbo.tasks SET stages = '[]' WHERE stages IS NULL");
+        backend_->exec("UPDATE dbo.tasks SET current_stage = 0 WHERE current_stage IS NULL");
         backend_->exec(R"(
             IF OBJECT_ID('dbo.plans', 'U') IS NULL
             CREATE TABLE dbo.plans (
@@ -173,6 +188,8 @@ void Database::initTables() {
                 status          TEXT DEFAULT 'todo',
                 due_date        TEXT DEFAULT '',
                 archived        INTEGER DEFAULT 0,
+                stages          TEXT DEFAULT '[]',
+                current_stage   INTEGER DEFAULT 0,
                 created_at      TEXT NOT NULL,
                 updated_at      TEXT NOT NULL
             );
@@ -221,6 +238,13 @@ void Database::initTables() {
         try {
             backend_->exec("ALTER TABLE tasks ADD COLUMN archived INTEGER DEFAULT 0");
         } catch (...) { /* column already exists */ }
+        // Migration: add stages + current_stage for the template feature
+        try {
+            backend_->exec("ALTER TABLE tasks ADD COLUMN stages TEXT DEFAULT '[]'");
+        } catch (...) { /* column already exists */ }
+        try {
+            backend_->exec("ALTER TABLE tasks ADD COLUMN current_stage INTEGER DEFAULT 0");
+        } catch (...) { /* column already exists */ }
     }
 }
 
@@ -254,11 +278,13 @@ std::string Database::insertSessionSql() const {
 std::string Database::insertTaskSql() const {
     if (useAzureSql_)
         return "INSERT INTO tasks (user_id, parent_id, title, description, priority, "
-               "estimated_minutes, actual_minutes, category, status, due_date, archived, created_at, updated_at) "
-               "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+               "estimated_minutes, actual_minutes, category, status, due_date, archived, "
+               "stages, current_stage, created_at, updated_at) "
+               "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     return "INSERT INTO tasks (user_id, parent_id, title, description, priority, "
-           "estimated_minutes, actual_minutes, category, status, due_date, archived, created_at, updated_at) "
-           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+           "estimated_minutes, actual_minutes, category, status, due_date, archived, "
+           "stages, current_stage, created_at, updated_at) "
+           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 }
 
 std::string Database::insertLogSql() const {
@@ -284,14 +310,18 @@ static Task rowToTask(const Row& r) {
     t.status            = r.getText(8);
     t.due_date          = r.getText(9);
     t.archived          = r.getInt(10);
-    t.created_at        = r.getText(11);
-    t.updated_at        = r.getText(12);
+    t.stages            = r.getText(11);
+    if (t.stages.empty()) t.stages = "[]";
+    t.current_stage     = r.getInt(12);
+    t.created_at        = r.getText(13);
+    t.updated_at        = r.getText(14);
     return t;
 }
 
 static const char* TASK_COLS =
     "id, parent_id, title, description, priority, estimated_minutes, "
-    "actual_minutes, category, status, due_date, archived, created_at, updated_at";
+    "actual_minutes, category, status, due_date, archived, stages, current_stage, "
+    "created_at, updated_at";
 
 // ── Users ──────────────────────────────────────────────────────────────
 
@@ -408,6 +438,7 @@ void Database::deleteSession(const std::string& token) {
 
 Task Database::createTask(int userId, const Task& task) {
     std::string ts = now();
+    std::string stages = task.stages.empty() ? std::string("[]") : task.stages;
     int id = backend_->insertReturningId(insertTaskSql(),
         {Param::Int(userId), Param::Int(task.parent_id),
          Param::Text(task.title), Param::Text(task.description),
@@ -415,10 +446,12 @@ Task Database::createTask(int userId, const Task& task) {
          Param::Int(task.actual_minutes), Param::Text(task.category),
          Param::Text(task.status), Param::Text(task.due_date),
          Param::Int(task.archived),
+         Param::Text(stages), Param::Int(task.current_stage),
          Param::Text(ts), Param::Text(ts)});
 
     Task result = task;
     result.id = id;
+    result.stages = stages;
     result.created_at = ts;
     result.updated_at = ts;
     return result;
@@ -479,15 +512,19 @@ std::vector<Task> Database::getAllTasks(int userId, const std::string& status,
 
 bool Database::updateTask(int userId, int id, const Task& task) {
     std::string ts = now();
+    std::string stages = task.stages.empty() ? std::string("[]") : task.stages;
     int affected = backend_->execute(
         "UPDATE tasks SET parent_id=?, title=?, description=?, priority=?, "
-        "estimated_minutes=?, actual_minutes=?, category=?, status=?, due_date=?, archived=?, updated_at=? "
+        "estimated_minutes=?, actual_minutes=?, category=?, status=?, due_date=?, archived=?, "
+        "stages=?, current_stage=?, updated_at=? "
         "WHERE id=? AND user_id=?",
         {Param::Int(task.parent_id), Param::Text(task.title), Param::Text(task.description),
          Param::Int(task.priority), Param::Int(task.estimated_minutes),
          Param::Int(task.actual_minutes), Param::Text(task.category),
          Param::Text(task.status), Param::Text(task.due_date),
-         Param::Int(task.archived), Param::Text(ts),
+         Param::Int(task.archived),
+         Param::Text(stages), Param::Int(task.current_stage),
+         Param::Text(ts),
          Param::Int(id), Param::Int(userId)});
     return affected > 0;
 }

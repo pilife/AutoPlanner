@@ -49,3 +49,29 @@ export function getTaskPath(taskId, taskMap) {
   }
   return parts.join(' > ');
 }
+
+// Task lifecycle templates. Each stage will be created with
+// actual_minutes=0 and completed_at='' until the stage finishes.
+export const TASK_TEMPLATES = {
+  none: { label: 'None', stages: [] },
+  engineering: {
+    label: 'Engineering Lifecycle',
+    stages: [
+      { name: 'Design', hint: 'create one pager' },
+      { name: 'Coding', hint: 'create PR ready for review' },
+      { name: 'Checkin', hint: 'resolve PR comments' },
+      { name: 'Deploy and Monitor', hint: '' },
+    ],
+  },
+};
+
+export function makeStagesFromTemplate(templateKey) {
+  const tpl = TASK_TEMPLATES[templateKey];
+  if (!tpl || tpl.stages.length === 0) return [];
+  return tpl.stages.map(s => ({
+    name: s.name,
+    hint: s.hint || '',
+    actual_minutes: 0,
+    completed_at: '',
+  }));
+}

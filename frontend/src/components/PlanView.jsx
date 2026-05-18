@@ -34,6 +34,9 @@ const PRIORITY_LABELS = { 1: 'Critical', 2: 'High', 3: 'Medium', 4: 'Low', 5: 'M
 function TaskDetailModal({ task, taskMap, onClose }) {
   if (!task) return null;
   const path = task.parent_id ? getTaskPath(task.id, taskMap) : null;
+  const stages = Array.isArray(task.stages) ? task.stages : [];
+  const hasTemplate = stages.length > 1;
+  const currentStage = task.current_stage || 0;
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 600 }}>
@@ -48,6 +51,34 @@ function TaskDetailModal({ task, taskMap, onClose }) {
           <span><strong>Status:</strong> {task.status}</span>
           {task.estimated_minutes > 0 && <span><strong>Estimate:</strong> {formatDuration(task.estimated_minutes)}</span>}
         </div>
+        {hasTemplate && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: 6 }}>Stages</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {stages.map((s, i) => {
+                const isDone = !!s.completed_at;
+                const isCurrent = i === currentStage;
+                return (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '6px 10px',
+                    background: isCurrent ? '#dfe6e9' : '#f8f9fa',
+                    borderLeft: `3px solid ${isDone ? '#00b894' : isCurrent ? '#0984e3' : '#dfe6e9'}`,
+                    borderRadius: 4,
+                    fontSize: '0.85rem',
+                  }}>
+                    <span style={{ minWidth: 20, color: '#636e72' }}>{i + 1}.</span>
+                    <span style={{ fontWeight: 600 }}>{s.name}</span>
+                    {s.hint && <span style={{ color: '#636e72', fontSize: '0.8rem' }}>({s.hint})</span>}
+                    <span style={{ marginLeft: 'auto', fontSize: '0.8rem', color: '#636e72' }}>
+                      {isDone ? `✓ ${formatDuration(s.actual_minutes || 0)} on ${s.completed_at}` : isCurrent ? 'current' : 'pending'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {task.description && (
           <div data-color-mode="light" style={{ maxHeight: 400, overflow: 'auto' }}>
             <MDEditor.Markdown source={task.description} />

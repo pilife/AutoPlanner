@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { toMinutes, fromMinutes } from '../helpers';
+import { toMinutes, fromMinutes, TASK_TEMPLATES, makeStagesFromTemplate } from '../helpers';
 import MarkdownEditor from './MarkdownEditor';
 
 export default function TaskForm({ task, allTasks = [], onSave, onCancel }) {
   const isLeaf = !task.id || !allTasks.some(t => t.parent_id === task.id);
+  const isNew = !task.id;
   const [form, setForm] = useState({
     title: task.title || '',
     description: task.description || '',
@@ -14,19 +15,26 @@ export default function TaskForm({ task, allTasks = [], onSave, onCancel }) {
     status: task.status || 'todo',
     due_date: task.due_date || '',
     parent_id: task.parent_id || 0,
+    template: 'none',
   });
 
   const set = (field) => (e) => setForm({ ...form, [field]: e.target.value });
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSave({
+    const payload = {
       ...form,
       id: task.id || undefined,
       priority: Number(form.priority),
       estimated_minutes: toMinutes(form.estimatedValue, form.estimatedUnit),
       parent_id: Number(form.parent_id),
-    });
+    };
+    delete payload.template;
+    if (isNew && form.template !== 'none') {
+      payload.stages = makeStagesFromTemplate(form.template);
+      payload.current_stage = 0;
+    }
+    onSave(payload);
   };
 
   // Exclude the task being edited (and its descendants) from parent options
@@ -139,6 +147,23 @@ export default function TaskForm({ task, allTasks = [], onSave, onCancel }) {
               <option value="done">Done</option>
             </select>
           </div>
+          {isNew && (
+            <div className="form-group">
+              <label>Template</label>
+              <select value={form.template} onChange={set('template')}>
+                {Object.entries(TASK_TEMPLATES).map(([key, tpl]) => (
+                  <option key={key} value={key}>{tpl.label}</option>
+                ))}
+              </select>
+              {form.template !== 'none' && (
+                <div style={{ fontSize: '0.8rem', color: '#636e72', marginTop: 6 }}>
+                  Stages: {TASK_TEMPLATES[form.template].stages.map(s => s.name).join(' → ')}
+                  <br />
+                  When this task is marked done, it auto-advances to the next stage with status To Do.
+                </div>
+              )}
+            </div>
+          )}
           <div className="modal-actions">
             <button type="button" className="btn" onClick={onCancel}>Cancel</button>
             <button type="submit" className="btn btn-primary">

@@ -66,6 +66,32 @@ static std::string todayStr() {
     return oss.str();
 }
 
+// If the task's status just transitioned to "done" and the task has more
+// stages remaining in its template, snapshot the current stage's actual
+// minutes + completion timestamp, advance to the next stage, and reset
+// status to "todo" with actual_minutes=0. Mutates `t` in place.
+// Returns true if a stage advance happened.
+static bool maybeAdvanceStage(Task& t, const Task& existing) {
+    if (existing.status == "done" || t.status != "done") return false;
+    if (t.stages.empty() || t.stages == "[]" || t.stages == "null") return false;
+
+    json stages;
+    try { stages = json::parse(t.stages); } catch (...) { return false; }
+    if (!stages.is_array()) return false;
+    if (t.current_stage < 0 || t.current_stage >= (int)stages.size() - 1) return false;
+
+    // Snapshot the just-completed stage
+    if (!stages[t.current_stage].is_object()) return false;
+    stages[t.current_stage]["actual_minutes"] = t.actual_minutes;
+    stages[t.current_stage]["completed_at"] = todayStr();
+
+    t.current_stage++;
+    t.status = "todo";
+    t.actual_minutes = 0;
+    t.stages = stages.dump();
+    return true;
+}
+
 // Get remaining weekdays from startDate through Friday of that week
 static std::vector<std::string> getRemainingWeekDays(const std::string& monday,
                                                       const std::string& startDate) {
@@ -269,6 +295,12 @@ void registerRoutes(httplib::Server& server, Database& db) {
             if (body.contains("status"))            t.status = body["status"];
             if (body.contains("due_date"))          t.due_date = body["due_date"];
             if (body.contains("archived"))          t.archived = body["archived"];
+            if (body.contains("stages") && body["stages"].is_array())
+                t.stages = body["stages"].dump();
+            if (body.contains("current_stage"))     t.current_stage = body["current_stage"];
+
+            // Auto-advance to next stage if marking done with more stages left
+            maybeAdvanceStage(t, *existing);
 
             if (db.updateTask(userId, id, t)) {
                 if (oldParentId > 0) db.recalcEstimate(oldParentId);
@@ -638,6 +670,7 @@ void registerRoutes(httplib::Server& server, Database& db) {
                     Task t = *task;
                     t.status = status;
                     t.actual_minutes = actualMinutes;
+                    maybeAdvanceStage(t, *task);
                     db.updateTask(userId, taskId, t);
                 }
             }
