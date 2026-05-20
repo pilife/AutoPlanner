@@ -4,6 +4,7 @@ import MDEditor from '@uiw/react-md-editor';
 import { getPlan, savePlan, generateWeeklyPlan, generateDailyPlans, getTasks, getUnreviewedPlans, updateTask, createTask } from '../api';
 import { formatDuration, getTaskPath } from '../helpers';
 import ReviewModal from './ReviewModal';
+import StageBadge from './StageBadge';
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -300,6 +301,7 @@ function DailyPlansDragGrid({ dailyPlans, taskMap, onPlansUpdated, onTaskClick }
                                   <strong style={{ fontSize: '0.85rem' }}>
                                     {task && task.parent_id > 0 ? getTaskPath(task.id, taskMap) : (task?.title || `Task #${item.task_id}`)}
                                   </strong>
+                                  <StageBadge task={task} size="xs" />
                                 </div>
                                 <span className="duration">{formatDuration(item.duration_minutes)}</span>
                               </div>
@@ -630,6 +632,7 @@ export default function PlanView() {
                         <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
                           {task ? task.title : `Task #${node.id}`}
                         </span>
+                        <StageBadge task={task} />
                         {isDone && <span className="status-badge status-done" style={{ marginLeft: 8 }}>done</span>}
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -820,6 +823,7 @@ export default function PlanView() {
                       <span style={isDone ? { textDecoration: 'line-through', color: '#b2bec3' } : {}}>
                         {task ? task.title : `Task #${node.id}`}
                       </span>
+                      <StageBadge task={task} />
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginRight: 6 }}>
                       <span style={{ color: '#636e72', fontSize: '0.8rem' }}>Est: {formatDuration(node.planItem.duration_minutes)}</span>

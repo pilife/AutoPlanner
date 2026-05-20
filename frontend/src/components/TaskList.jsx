@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getTasks, createTask, updateTask, deleteTask } from '../api';
 import TaskForm from './TaskForm';
+import StageBadge from './StageBadge';
 import { formatDuration } from '../helpers';
 
 const PRIORITY_LABELS = { 1: 'Critical', 2: 'High', 3: 'Medium', 4: 'Low', 5: 'Minimal' };
@@ -25,9 +26,6 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, on
   const hasChildren = task.children && task.children.length > 0;
   const expanded = expandedIds.has(task.id);
   const isArchived = task.archived === 1 || task.archived === true;
-  const stages = Array.isArray(task.stages) ? task.stages : [];
-  const hasTemplate = stages.length > 1;
-  const currentStage = hasTemplate ? stages[task.current_stage || 0] : null;
 
   return (
     <>
@@ -42,21 +40,7 @@ function TaskRow({ task, depth, onEdit, onDelete, onStatusToggle, onAddChild, on
               <span style={{ width: 16, display: 'inline-block' }} />
             )}
             <span>{task.title}</span>
-            {hasTemplate && currentStage && (
-              <span
-                title={stages.map((s, i) => `${i + 1}. ${s.name}${s.completed_at ? ' ✓' : ''}`).join('\n')}
-                style={{
-                  fontSize: '0.7rem',
-                  color: '#0984e3',
-                  background: '#dfe6e9',
-                  padding: '1px 6px',
-                  borderRadius: 4,
-                  fontWeight: 500,
-                }}
-              >
-                {currentStage.name} {(task.current_stage || 0) + 1}/{stages.length}
-              </span>
-            )}
+            <StageBadge task={task} />
             {isArchived && (
               <span style={{ fontSize: '0.7rem', color: '#b2bec3', marginLeft: 6, fontStyle: 'italic' }}>archived</span>
             )}

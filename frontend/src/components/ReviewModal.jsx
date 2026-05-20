@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { formatDuration, getTaskPath } from '../helpers';
 import { reviewPlan } from '../api';
+import StageBadge from './StageBadge';
 
 export default function ReviewModal({ plans, taskMap, onComplete, onSkip }) {
   const [currentPlanIdx, setCurrentPlanIdx] = useState(0);
@@ -122,6 +123,7 @@ export default function ReviewModal({ plans, taskMap, onComplete, onSkip }) {
                             </div>
                           )}
                           <strong>{task ? task.title : `Task #${item.task_id}`}</strong>
+                          <StageBadge task={task} />
                           <div style={{ fontSize: '0.8rem', color: '#636e72' }}>
                             Planned: {formatDuration(item.duration_minutes)}
                           </div>
